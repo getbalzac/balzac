@@ -1,0 +1,7 @@
+pre-commit:
+    jobs:
+        - name: "Format"
+          run: "cargo fmt"
+          stage_fixed: true
+        - name: "Clippy"
+          run: "cargo clippy -- -Dwarnings"

@@ -1,0 +1,16 @@
+[package]
+name = "balzac"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+colog = "1.4.0"
+facet = "0.41.0"
+facet-toml = "0.41.0"
+handlebars = "6.3.2"
+log = "0.4.29"
+serde_json = "1.0.148"
+toml = "0.9.10"
+
+[dev-dependencies]
+tempfile = "3.10"
