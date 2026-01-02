@@ -8,6 +8,10 @@ pub struct Config {
     pub output_directory: String,
     #[facet(default="./pages".to_string())]
     pub pages_directory: String,
+    #[facet(default="./layouts".to_string())]
+    pub layouts_directory: String,
+    #[facet(default="./partials".to_string())]
+    pub partials_directory: String,
     pub global: Option<HashMap<String, String>>,
 }
 
