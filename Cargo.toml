@@ -1,7 +1,16 @@
 [package]
 name = "balzac"
 version = "0.1.0"
+description = "A blazingly fast static site generator"
+license = "MIT"
+homepage = "https://balzac.rs"
+repository = "https://github.com/getbalzac/balzac"
 edition = "2024"
+readme = "README.md"
+exclude = [
+    "dist/*",
+    "pages/*"
+]
 
 [dependencies]
 colog = "1.4.0"
