@@ -7,21 +7,31 @@ use balzac::config::Config;
 use balzac::{make_dist_folder, render_static_pages};
 
 /// Helper function to create a temporary project structure
-fn setup_test_project() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+fn setup_test_project() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let temp_path = temp_dir.path().to_path_buf();
 
     let pages_dir = temp_path.join("pages");
     let output_dir = temp_path.join("dist");
+    let layouts_dir = temp_path.join("layouts");
+    let partials_dir = temp_path.join("partials");
 
     fs::create_dir(&pages_dir).expect("Failed to create pages directory");
 
-    (temp_dir, temp_path, pages_dir, output_dir)
+    (
+        temp_dir,
+        temp_path,
+        pages_dir,
+        output_dir,
+        layouts_dir,
+        partials_dir,
+    )
 }
 
 #[test]
 fn test_full_workflow_single_page() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create a simple template
     let template_content = "<h1>{{title}}</h1><p>{{content}}</p>";
@@ -32,6 +42,8 @@ fn test_full_workflow_single_page() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: None,
     };
 
@@ -54,7 +66,8 @@ fn test_full_workflow_single_page() {
 
 #[test]
 fn test_full_workflow_multiple_pages() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create multiple templates
     fs::write(pages_dir.join("index.handlebars"), "<h1>Home</h1>").expect("Failed to write index");
@@ -66,6 +79,8 @@ fn test_full_workflow_multiple_pages() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: None,
     };
 
@@ -95,7 +110,8 @@ fn test_full_workflow_multiple_pages() {
 
 #[test]
 fn test_workflow_with_global_data() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create a template that uses global data
     let template_content = "<h1>{{global_title}}</h1><p>Author: {{global_author}}</p>";
@@ -110,6 +126,8 @@ fn test_workflow_with_global_data() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: Some(global),
     };
 
@@ -125,7 +143,8 @@ fn test_workflow_with_global_data() {
 
 #[test]
 fn test_make_dist_folder_creates_directory() {
-    let (_temp_dir, temp_path, _pages_dir, output_dir) = setup_test_project();
+    let (_temp_dir, temp_path, _pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Ensure output dir doesn't exist initially
     assert!(!output_dir.exists());
@@ -133,6 +152,8 @@ fn test_make_dist_folder_creates_directory() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: temp_path.join("pages").to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: None,
     };
 
@@ -144,7 +165,8 @@ fn test_make_dist_folder_creates_directory() {
 
 #[test]
 fn test_make_dist_folder_recreates_existing_directory() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create output directory with a file
     fs::create_dir(&output_dir).expect("Failed to create output dir");
@@ -153,6 +175,8 @@ fn test_make_dist_folder_recreates_existing_directory() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: None,
     };
 
@@ -165,7 +189,8 @@ fn test_make_dist_folder_recreates_existing_directory() {
 
 #[test]
 fn test_workflow_preserves_file_extensions() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create templates with different extensions
     fs::write(pages_dir.join("page.handlebars"), "<h1>Handlebars</h1>")
@@ -175,6 +200,8 @@ fn test_workflow_preserves_file_extensions() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: None,
     };
 
@@ -188,7 +215,8 @@ fn test_workflow_preserves_file_extensions() {
 
 #[test]
 fn test_template_with_conditionals() {
-    let (_temp, _temp_path, pages_dir, output_dir) = setup_test_project();
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
 
     // Create a template with conditionals
     let template_content = "{{#if show_message}}<p>Welcome!</p>{{/if}}";
@@ -201,6 +229,8 @@ fn test_template_with_conditionals() {
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
         pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
         global: Some(global),
     };
 
