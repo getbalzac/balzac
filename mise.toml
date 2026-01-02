@@ -1,3 +1,6 @@
 [tools]
 lefthook = "latest"
 rust = "latest"
+
+[hooks]
+postinstall = "lefthook install"
