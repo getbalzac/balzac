@@ -6,6 +6,7 @@ use crate::config;
 
 pub trait Renderer {
     fn new(configuration: &config::Config) -> Self;
+    fn init(&mut self, configuration: &config::Config);
     fn render(&self, template: String, data: serde_json::Value) -> String;
 }
 
@@ -13,12 +14,8 @@ pub struct HandlebarsRenderer<'a> {
     pub registry: handlebars::Handlebars<'a>,
 }
 
-impl<'a> Renderer for HandlebarsRenderer<'a> {
-    fn new(configuration: &config::Config) -> HandlebarsRenderer<'a> {
-        let mut reg = Handlebars::new();
-
-        //read partials
-
+impl<'a> HandlebarsRenderer<'a> {
+    fn register_partials(&mut self, configuration: &config::Config) {
         let partial_dir_exists = fs::exists(&configuration.partials_directory)
             .expect("Could not check if partial dir exists");
         if partial_dir_exists {
@@ -31,13 +28,16 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
                 let partial_content =
                     fs::read_to_string(&partial_path).expect("Cannot read partial file content");
                 let partial_name = &partial_path.file_stem().expect("Could not get file stem");
-                reg.register_partial(&partial_name.to_string_lossy(), partial_content)
+                self.registry
+                    .register_partial(&partial_name.to_string_lossy(), partial_content)
                     .expect("Cannot register partial");
             }
         } else {
             log::info!("Could not find partial directory, skipping register step");
         }
+    }
 
+    fn register_layouts(&mut self, configuration: &config::Config) {
         let layouts_dir_exists = fs::exists(&configuration.layouts_directory)
             .expect("Could not check if partial layouts dir exists");
 
@@ -51,12 +51,24 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
                 let partial_content =
                     fs::read_to_string(&partial_path).expect("Cannot read layout file content");
                 let partial_name = &partial_path.file_stem().expect("Could not get file stem");
-                reg.register_partial(&partial_name.to_string_lossy(), partial_content)
+                self.registry
+                    .register_partial(&partial_name.to_string_lossy(), partial_content)
                     .expect("Cannot register layout");
             }
         } else {
             log::info!("Could not find layouts directory, skipping register step");
         }
+    }
+}
+
+impl<'a> Renderer for HandlebarsRenderer<'a> {
+    fn init(&mut self, configuration: &config::Config) {
+        self.register_partials(configuration);
+        self.register_layouts(configuration);
+    }
+    fn new(_configuration: &config::Config) -> HandlebarsRenderer<'a> {
+        let reg = Handlebars::new();
+
         HandlebarsRenderer { registry: reg }
     }
     fn render(&self, template: String, data: serde_json::Value) -> String {
