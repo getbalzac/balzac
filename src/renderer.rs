@@ -27,16 +27,18 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
             {
                 let dir = entry.expect("Could not get directory handler");
                 log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                let partial_path = dir.path();
                 let partial_content =
-                    fs::read_to_string(dir.path()).expect("Cannot read partial file content");
-                reg.register_partial("alert", partial_content)
-                    .expect("Cannot register partian");
+                    fs::read_to_string(&partial_path).expect("Cannot read partial file content");
+                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
+                reg.register_partial(&partial_name.to_string_lossy(), partial_content)
+                    .expect("Cannot register partial");
             }
         } else {
             log::info!("Could not find partial directory, skipping register step");
         }
 
-        return HandlebarsRenderer { registry: reg };
+        HandlebarsRenderer { registry: reg }
     }
     fn render(&self, template: String, data: serde_json::Value) -> String {
         self.registry
