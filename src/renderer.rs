@@ -1,16 +1,27 @@
 use handlebars::Handlebars;
 
+use crate::config;
+
 pub trait Renderer {
+    fn new(configuration: &config::Config) -> Self;
     fn render(&self, template: String, data: serde_json::Value) -> String;
 }
 
-pub struct HandlebarsRenderer {}
+pub struct HandlebarsRenderer<'a> {
+    pub registry: handlebars::Handlebars<'a>,
+}
 
-impl Renderer for HandlebarsRenderer {
-    fn render(&self, template: String, data: serde_json::Value) -> String {
+impl<'a> Renderer for HandlebarsRenderer<'a> {
+    fn new(configuration: &config::Config) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();
 
-        reg.render_template(&template, &data)
+        // read partials
+
+        return HandlebarsRenderer { registry: reg };
+    }
+    fn render(&self, template: String, data: serde_json::Value) -> String {
+        self.registry
+            .render_template(&template, &data)
             .expect("Could not render template")
     }
 }
@@ -19,9 +30,14 @@ impl Renderer for HandlebarsRenderer {
 mod tests {
     use super::*;
 
+    fn create_renderer() -> HandlebarsRenderer<'static> {
+        let reg = Handlebars::new();
+        HandlebarsRenderer { registry: reg }
+    }
+
     #[test]
     fn test_render_simple_template() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Hello, World!".to_string();
         let data = serde_json::json!({});
 
@@ -31,7 +47,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_variable() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Hello, {{name}}!".to_string();
         let data = serde_json::json!({
             "name": "Alice"
@@ -43,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_multiple_variables() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{greeting}} {{name}}, welcome to {{site}}!".to_string();
         let data = serde_json::json!({
             "greeting": "Hello",
@@ -57,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_nested_data() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Author: {{author.name}} ({{author.email}})".to_string();
         let data = serde_json::json!({
             "author": {
@@ -72,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_conditional() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{#if is_active}}Active{{else}}Inactive{{/if}}".to_string();
         let data = serde_json::json!({
             "is_active": true
@@ -84,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_loop() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{#each items}}- {{this}}\n{{/each}}".to_string();
         let data = serde_json::json!({
             "items": ["Rust", "Handlebars", "SSG"]
@@ -96,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_render_empty_template_with_data() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "".to_string();
         let data = serde_json::json!({
             "unused": "data"
