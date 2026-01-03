@@ -1,3 +1,5 @@
+use std::fs;
+
 use handlebars::Handlebars;
 
 use crate::config;
@@ -13,9 +15,26 @@ pub struct HandlebarsRenderer<'a> {
 
 impl<'a> Renderer for HandlebarsRenderer<'a> {
     fn new(configuration: &config::Config) -> HandlebarsRenderer<'a> {
-        let reg = Handlebars::new();
+        let mut reg = Handlebars::new();
 
-        // read partials
+        //read partials
+
+        let partial_dir_exists = fs::exists(&configuration.partials_directory)
+            .expect("Could not check if partial dir exists");
+        if partial_dir_exists {
+            for entry in fs::read_dir(&configuration.partials_directory)
+                .expect("Could not read partials directory")
+            {
+                let dir = entry.expect("Could not get directory handler");
+                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                let partial_content =
+                    fs::read_to_string(dir.path()).expect("Cannot read partial file content");
+                reg.register_partial("alert", partial_content)
+                    .expect("Cannot register partian");
+            }
+        } else {
+            log::info!("Could not find partial directory, skipping register step");
+        }
 
         return HandlebarsRenderer { registry: reg };
     }
