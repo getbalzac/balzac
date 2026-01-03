@@ -1,3 +1,4 @@
+use balzac::renderer::{HandlebarsRenderer, Renderer};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -26,6 +27,56 @@ fn setup_test_project() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf
         layouts_dir,
         partials_dir,
     )
+}
+
+#[test]
+fn test_partials_registration() {
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
+    let partial_content = "template";
+
+    fs::create_dir(&partials_dir).expect("Failed to create partials directory");
+
+    fs::write(partials_dir.join("alert.handlebars"), partial_content)
+        .expect("Failed to write partial");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        global: None,
+    };
+
+    let mut renderer = HandlebarsRenderer::new(&config);
+    renderer.init(&config);
+
+    assert!(
+        renderer.registry.get_templates().contains_key("alert"),
+        "Could not register partial alert"
+    );
+}
+
+#[test]
+fn test_partials_registration_without_folder() {
+    let (_temp, _temp_path, pages_dir, output_dir, layouts_dir, partials_dir) =
+        setup_test_project();
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        global: None,
+    };
+
+    let mut renderer = HandlebarsRenderer::new(&config);
+    renderer.init(&config);
+
+    assert!(
+        renderer.registry.get_templates().len() == 0,
+        "Could not register partial alert"
+    );
 }
 
 #[test]
