@@ -38,6 +38,25 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
             log::info!("Could not find partial directory, skipping register step");
         }
 
+        let layouts_dir_exists = fs::exists(&configuration.layouts_directory)
+            .expect("Could not check if partial layouts dir exists");
+
+        if layouts_dir_exists {
+            for entry in fs::read_dir(&configuration.layouts_directory)
+                .expect("Could not read layouts directory")
+            {
+                let dir = entry.expect("Could not get directory handler");
+                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                let partial_path = dir.path();
+                let partial_content =
+                    fs::read_to_string(&partial_path).expect("Cannot read layout file content");
+                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
+                reg.register_partial(&partial_name.to_string_lossy(), partial_content)
+                    .expect("Cannot register layout");
+            }
+        } else {
+            log::info!("Could not find layouts directory, skipping register step");
+        }
         HandlebarsRenderer { registry: reg }
     }
     fn render(&self, template: String, data: serde_json::Value) -> String {
