@@ -8,11 +8,22 @@
 - Create a balzac.toml configuration file
 
 
+## Directory Structure
+
+Balzac supports different directories that you are free to create or skip:
+
+- pages_directory (required): directory that stores all the handlebars templates that will be used to create pages
+- partials_directory (optional): houses all handlebars partials
+- layouts_directory (optional): houses all handlebars layouts
+
+
 
 ## Config Reference
 
 - output_directory : the directory where the generated website will be sent to
-- pages_directory: the directory where static pages will reside (like your index)
+- pages_directory (optional): the directory where static pages will reside (like your index)
+- partials_directory (optional): directory where partial templates will reside
+- layouts_directory (optional): directory where layout templates will reside
 - global: fill this array if you want to have global data available in all the templates and files
 
 ## Development

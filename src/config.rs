@@ -8,6 +8,10 @@ pub struct Config {
     pub output_directory: String,
     #[facet(default="./pages".to_string())]
     pub pages_directory: String,
+    #[facet(default="./layouts".to_string())]
+    pub layouts_directory: String,
+    #[facet(default="./partials".to_string())]
+    pub partials_directory: String,
     pub global: Option<HashMap<String, String>>,
 }
 
@@ -20,6 +24,8 @@ mod tests {
         let config = Config {
             output_directory: "./dist".to_string(),
             pages_directory: "./pages".to_string(),
+            layouts_directory: "./layouts".to_string(),
+            partials_directory: "./partials".to_string(),
             global: None,
         };
         assert_eq!(config.output_directory, "./dist");
@@ -30,6 +36,8 @@ mod tests {
         let config = Config {
             output_directory: "./dist".to_string(),
             pages_directory: "./pages".to_string(),
+            layouts_directory: "./layouts".to_string(),
+            partials_directory: "./partials".to_string(),
             global: None,
         };
         assert_eq!(config.pages_directory, "./pages");
@@ -44,6 +52,8 @@ mod tests {
         let config = Config {
             output_directory: "./dist".to_string(),
             pages_directory: "./pages".to_string(),
+            layouts_directory: "./layouts".to_string(),
+            partials_directory: "./partials".to_string(),
             global: Some(global),
         };
 
@@ -58,10 +68,14 @@ mod tests {
         let config = Config {
             output_directory: "./build".to_string(),
             pages_directory: "./src/pages".to_string(),
+            layouts_directory: "./custom/layouts".to_string(),
+            partials_directory: "./custom/partials".to_string(),
             global: None,
         };
 
         assert_eq!(config.output_directory, "./build");
         assert_eq!(config.pages_directory, "./src/pages");
+        assert_eq!(config.layouts_directory, "./custom/layouts");
+        assert_eq!(config.partials_directory, "./custom/partials");
     }
 }

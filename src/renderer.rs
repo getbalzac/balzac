@@ -1,16 +1,79 @@
+use std::fs;
+
 use handlebars::Handlebars;
 
+use crate::config;
+
 pub trait Renderer {
+    fn new(configuration: &config::Config) -> Self;
+    fn init(&mut self, configuration: &config::Config);
     fn render(&self, template: String, data: serde_json::Value) -> String;
 }
 
-pub struct HandlebarsRenderer {}
+pub struct HandlebarsRenderer<'a> {
+    pub registry: handlebars::Handlebars<'a>,
+}
 
-impl Renderer for HandlebarsRenderer {
-    fn render(&self, template: String, data: serde_json::Value) -> String {
+impl<'a> HandlebarsRenderer<'a> {
+    fn register_partials(&mut self, configuration: &config::Config) {
+        let partial_dir_exists = fs::exists(&configuration.partials_directory)
+            .expect("Could not check if partial dir exists");
+        if partial_dir_exists {
+            for entry in fs::read_dir(&configuration.partials_directory)
+                .expect("Could not read partials directory")
+            {
+                let dir = entry.expect("Could not get directory handler");
+                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                let partial_path = dir.path();
+                let partial_content =
+                    fs::read_to_string(&partial_path).expect("Cannot read partial file content");
+                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
+                self.registry
+                    .register_partial(&partial_name.to_string_lossy(), partial_content)
+                    .expect("Cannot register partial");
+            }
+        } else {
+            log::info!("Could not find partial directory, skipping register step");
+        }
+    }
+
+    fn register_layouts(&mut self, configuration: &config::Config) {
+        let layouts_dir_exists = fs::exists(&configuration.layouts_directory)
+            .expect("Could not check if partial layouts dir exists");
+
+        if layouts_dir_exists {
+            for entry in fs::read_dir(&configuration.layouts_directory)
+                .expect("Could not read layouts directory")
+            {
+                let dir = entry.expect("Could not get directory handler");
+                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                let partial_path = dir.path();
+                let partial_content =
+                    fs::read_to_string(&partial_path).expect("Cannot read layout file content");
+                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
+                self.registry
+                    .register_partial(&partial_name.to_string_lossy(), partial_content)
+                    .expect("Cannot register layout");
+            }
+        } else {
+            log::info!("Could not find layouts directory, skipping register step");
+        }
+    }
+}
+
+impl<'a> Renderer for HandlebarsRenderer<'a> {
+    fn init(&mut self, configuration: &config::Config) {
+        self.register_partials(configuration);
+        self.register_layouts(configuration);
+    }
+    fn new(_configuration: &config::Config) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();
 
-        reg.render_template(&template, &data)
+        HandlebarsRenderer { registry: reg }
+    }
+    fn render(&self, template: String, data: serde_json::Value) -> String {
+        self.registry
+            .render_template(&template, &data)
             .expect("Could not render template")
     }
 }
@@ -19,9 +82,14 @@ impl Renderer for HandlebarsRenderer {
 mod tests {
     use super::*;
 
+    fn create_renderer() -> HandlebarsRenderer<'static> {
+        let reg = Handlebars::new();
+        HandlebarsRenderer { registry: reg }
+    }
+
     #[test]
     fn test_render_simple_template() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Hello, World!".to_string();
         let data = serde_json::json!({});
 
@@ -31,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_variable() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Hello, {{name}}!".to_string();
         let data = serde_json::json!({
             "name": "Alice"
@@ -43,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_multiple_variables() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{greeting}} {{name}}, welcome to {{site}}!".to_string();
         let data = serde_json::json!({
             "greeting": "Hello",
@@ -57,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_nested_data() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "Author: {{author.name}} ({{author.email}})".to_string();
         let data = serde_json::json!({
             "author": {
@@ -72,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_conditional() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{#if is_active}}Active{{else}}Inactive{{/if}}".to_string();
         let data = serde_json::json!({
             "is_active": true
@@ -84,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_render_template_with_loop() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "{{#each items}}- {{this}}\n{{/each}}".to_string();
         let data = serde_json::json!({
             "items": ["Rust", "Handlebars", "SSG"]
@@ -96,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_render_empty_template_with_data() {
-        let renderer = HandlebarsRenderer {};
+        let renderer = create_renderer();
         let template = "".to_string();
         let data = serde_json::json!({
             "unused": "data"

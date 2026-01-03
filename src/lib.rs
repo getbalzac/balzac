@@ -28,7 +28,8 @@ pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
 }
 
 pub fn render_static_pages(parsed_config: &config::Config) -> std::io::Result<()> {
-    let render = renderer::HandlebarsRenderer {};
+    let mut render = renderer::HandlebarsRenderer::new(parsed_config);
+    render.init(parsed_config);
     for entry in fs::read_dir(&parsed_config.pages_directory)? {
         let dir = entry?;
         log::info!(
