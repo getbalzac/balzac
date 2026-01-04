@@ -1,2 +1,8 @@
 /target
 balzac.toml
+assets
+content
+dist
+layouts
+pages
+partials
