@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::renderer::Renderer;
+use crate::renderer::{HandlebarsRenderer, Renderer};
 
 pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
@@ -124,9 +124,10 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
     Ok(())
 }
 
-pub fn render_static_pages(parsed_config: &config::Config) -> std::io::Result<()> {
-    let mut render = renderer::HandlebarsRenderer::new(parsed_config);
-    render.init(parsed_config);
+pub fn render_static_pages(
+    parsed_config: &config::Config,
+    render: HandlebarsRenderer,
+) -> std::io::Result<()> {
     for entry in fs::read_dir(&parsed_config.pages_directory)? {
         let dir = entry?;
         if dir.metadata()?.is_dir() {
