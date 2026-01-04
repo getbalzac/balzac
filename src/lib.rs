@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::renderer::Renderer;
+use crate::renderer::{HandlebarsRenderer, Renderer};
 
 pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
@@ -62,7 +62,10 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()> {
+pub fn render_collections(
+    parsed_config: &config::Config,
+    render: &HandlebarsRenderer,
+) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.content_directory)
         .expect("Could not check if the directory exists");
 
@@ -78,11 +81,11 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
                 continue;
             }
             log::info!("Rendering collection {}", dir.file_name().to_string_lossy());
-            let has_details_page = fs::exists(
-                PathBuf::from(&parsed_config.pages_directory)
-                    .join(dir.file_name())
-                    .join("details.hbs"),
-            )?;
+            fs::create_dir(PathBuf::from(&parsed_config.output_directory).join(dir.file_name()))?;
+            let details_page_path = PathBuf::from(&parsed_config.pages_directory)
+                .join(dir.file_name())
+                .join("details.hbs");
+            let has_details_page = fs::exists(&details_page_path)?;
 
             if !has_details_page {
                 log::error!(
@@ -97,9 +100,9 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
 
             for content_entry in fs::read_dir(&content_dir_path)? {
                 let content_dir = content_entry?;
+                let content_dir_path = content_dir.path();
 
-                if content_dir
-                    .path()
+                if content_dir_path
                     .extension()
                     .expect("Could not get extension for collection file")
                     .to_string_lossy()
@@ -111,10 +114,21 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
                     );
                     continue;
                 }
-
+                let content_filename = content_dir_path
+                    .file_stem()
+                    .expect("Could not get collection entry file stem");
                 let rendered_content = collection::parse_markdown(content_dir.path())?;
+                let rendered_output_path = PathBuf::from(&parsed_config.output_directory)
+                    .join(dir.file_name())
+                    .join(content_filename)
+                    .with_extension("html");
 
-                println!("{}", rendered_content);
+                let rendered_result = render.render(
+                    fs::read_to_string(&details_page_path)?,
+                    serde_json::json!({"content": rendered_content}),
+                );
+
+                fs::write(&rendered_output_path, &rendered_result)?;
             }
         }
     } else {
@@ -124,9 +138,10 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
     Ok(())
 }
 
-pub fn render_static_pages(parsed_config: &config::Config) -> std::io::Result<()> {
-    let mut render = renderer::HandlebarsRenderer::new(parsed_config);
-    render.init(parsed_config);
+pub fn render_static_pages(
+    parsed_config: &config::Config,
+    render: &HandlebarsRenderer,
+) -> std::io::Result<()> {
     for entry in fs::read_dir(&parsed_config.pages_directory)? {
         let dir = entry?;
         if dir.metadata()?.is_dir() {
