@@ -1,3 +1,4 @@
+pub mod collection;
 pub mod config;
 pub mod renderer;
 
@@ -61,11 +62,38 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()> {
+    let dir_exists = fs::exists(&parsed_config.content_directory)
+        .expect("Could not check if the directory exists");
+
+    if dir_exists {
+        for entry in fs::read_dir(&parsed_config.content_directory)? {
+            let dir = entry?;
+
+            if dir.metadata()?.is_file() {
+                log::info!(
+                    "Entry {} is a file; this is not allowed, skipping",
+                    dir.file_name().to_string_lossy()
+                );
+                continue;
+            }
+        }
+    } else {
+        log::info!("Content directory does not exist, skipping");
+    }
+
+    Ok(())
+}
+
 pub fn render_static_pages(parsed_config: &config::Config) -> std::io::Result<()> {
     let mut render = renderer::HandlebarsRenderer::new(parsed_config);
     render.init(parsed_config);
     for entry in fs::read_dir(&parsed_config.pages_directory)? {
         let dir = entry?;
+        if dir.metadata()?.is_dir() {
+            log::info!("Skipping directory {}", dir.file_name().to_string_lossy());
+            continue;
+        }
         log::info!(
             "Rendering page {}",
             dir.file_name()

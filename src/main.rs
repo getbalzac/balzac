@@ -1,7 +1,7 @@
 use facet_toml::from_str;
 use std::fs;
 
-use balzac::{add_assets, config, make_dist_folder, render_static_pages};
+use balzac::{add_assets, config, make_dist_folder, render_collections, render_static_pages};
 
 fn main() {
     colog::init();
@@ -16,6 +16,11 @@ fn main() {
 
     if let Err(e) = render_static_pages(&parsed_config) {
         log::error!("Error rendering static pages: {}", e);
+        std::process::exit(1);
+    }
+
+    if let Err(e) = render_collections(&parsed_config) {
+        log::error!("Error rendering collections: {}", e);
         std::process::exit(1);
     }
 
