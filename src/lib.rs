@@ -77,6 +77,20 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
                 );
                 continue;
             }
+            log::info!("Rendering collection {}", dir.file_name().to_string_lossy());
+            let has_details_page = fs::exists(
+                PathBuf::from(&parsed_config.pages_directory)
+                    .join(dir.file_name())
+                    .join("details.hbs"),
+            )?;
+
+            if !has_details_page {
+                log::error!(
+                    "Collection {} has no details page",
+                    dir.file_name().to_string_lossy()
+                );
+                continue;
+            }
         }
     } else {
         log::info!("Content directory does not exist, skipping");
