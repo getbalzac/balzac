@@ -143,7 +143,8 @@ fn test_full_workflow_single_page() {
 
     // Run the workflow
     make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config).expect("Failed to render static pages");
+    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+        .expect("Failed to render static pages");
 
     // Verify output
     let output_file = output_dir.join("index.html");
@@ -190,7 +191,8 @@ fn test_full_workflow_multiple_pages() {
 
     // Run the workflow
     make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config).expect("Failed to render static pages");
+    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+        .expect("Failed to render static pages");
 
     // Verify all outputs exist
     assert!(output_dir.join("index.html").exists());
@@ -247,7 +249,8 @@ fn test_workflow_with_global_data() {
 
     // Run the workflow
     make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config).expect("Failed to render static pages");
+    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+        .expect("Failed to render static pages");
 
     // Verify output with rendered global data
     let output_content =
@@ -350,7 +353,8 @@ fn test_workflow_preserves_file_extensions() {
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config).expect("Failed to render static pages");
+    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+        .expect("Failed to render static pages");
 
     // Both should be converted to .html output
     assert!(output_dir.join("page.html").exists());
@@ -389,7 +393,8 @@ fn test_template_with_conditionals() {
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config).expect("Failed to render static pages");
+    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+        .expect("Failed to render static pages");
 
     let output_content =
         fs::read_to_string(output_dir.join("index.html")).expect("Failed to read output");
