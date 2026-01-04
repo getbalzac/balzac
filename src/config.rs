@@ -12,6 +12,8 @@ pub struct Config {
     pub layouts_directory: String,
     #[facet(default="./partials".to_string())]
     pub partials_directory: String,
+    #[facet(default="./assets".to_string())]
+    pub assets_directory: String,
     pub global: Option<HashMap<String, String>>,
 }
 
@@ -26,6 +28,7 @@ mod tests {
             pages_directory: "./pages".to_string(),
             layouts_directory: "./layouts".to_string(),
             partials_directory: "./partials".to_string(),
+            assets_directory: "./assets".to_string(),
             global: None,
         };
         assert_eq!(config.output_directory, "./dist");
@@ -38,6 +41,7 @@ mod tests {
             pages_directory: "./pages".to_string(),
             layouts_directory: "./layouts".to_string(),
             partials_directory: "./partials".to_string(),
+            assets_directory: "./assets".to_string(),
             global: None,
         };
         assert_eq!(config.pages_directory, "./pages");
@@ -54,6 +58,7 @@ mod tests {
             pages_directory: "./pages".to_string(),
             layouts_directory: "./layouts".to_string(),
             partials_directory: "./partials".to_string(),
+            assets_directory: "./assets".to_string(),
             global: Some(global),
         };
 
@@ -70,6 +75,7 @@ mod tests {
             pages_directory: "./src/pages".to_string(),
             layouts_directory: "./custom/layouts".to_string(),
             partials_directory: "./custom/partials".to_string(),
+            assets_directory: "./assets".to_string(),
             global: None,
         };
 
