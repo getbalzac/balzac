@@ -91,6 +91,31 @@ pub fn render_collections(parsed_config: &config::Config) -> std::io::Result<()>
                 );
                 continue;
             }
+
+            let content_dir_path =
+                PathBuf::from(&parsed_config.content_directory).join(dir.file_name());
+
+            for content_entry in fs::read_dir(&content_dir_path)? {
+                let content_dir = content_entry?;
+
+                if content_dir
+                    .path()
+                    .extension()
+                    .expect("Could not get extension for collection file")
+                    .to_string_lossy()
+                    != "md"
+                {
+                    log::error!(
+                        "File {} is not a markdown file, skipping",
+                        content_dir.file_name().to_string_lossy()
+                    );
+                    continue;
+                }
+
+                let rendered_content = collection::parse_markdown(content_dir.path())?;
+
+                println!("{}", rendered_content);
+            }
         }
     } else {
         log::info!("Content directory does not exist, skipping");
