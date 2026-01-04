@@ -27,6 +27,40 @@ pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
+    let dir_exists = fs::exists(&parsed_config.assets_directory)?;
+
+    if dir_exists {
+        fs::create_dir(PathBuf::from(&parsed_config.output_directory).join("assets"))?;
+        for entry in fs::read_dir(&parsed_config.assets_directory)? {
+            let dir = entry?;
+
+            let is_directory = dir.metadata()?.is_dir();
+            if is_directory {
+                log::info!(
+                    "entry {} is a directory, skipping",
+                    dir.file_name().to_string_lossy()
+                );
+                continue;
+            }
+
+            let path = PathBuf::from(&parsed_config.output_directory)
+                .join("assets")
+                .join(dir.file_name());
+            log::info!(
+                "Copying {} to {}",
+                dir.file_name().to_string_lossy(),
+                path.to_string_lossy()
+            );
+            fs::copy(dir.path(), path)?;
+        }
+    } else {
+        log::info!("Assets directory does not exist, skipping");
+    }
+
+    Ok(())
+}
+
 pub fn render_static_pages(parsed_config: &config::Config) -> std::io::Result<()> {
     let mut render = renderer::HandlebarsRenderer::new(parsed_config);
     render.init(parsed_config);
