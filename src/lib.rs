@@ -16,13 +16,13 @@ use crate::{
 pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
     if !dir_exists {
-        log::info!(
+        log::debug!(
             "Creating output directory {}",
             parsed_config.output_directory
         );
         fs::create_dir(&parsed_config.output_directory)?;
     } else {
-        log::info!(
+        log::debug!(
             "Output directory {} already exists, recreating",
             parsed_config.output_directory
         );
@@ -42,7 +42,7 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
 
             let is_directory = dir.metadata()?.is_dir();
             if is_directory {
-                log::info!(
+                log::debug!(
                     "entry {} is a directory, skipping",
                     dir.file_name().to_string_lossy()
                 );
@@ -52,7 +52,7 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
             let path = PathBuf::from(&parsed_config.output_directory)
                 .join("assets")
                 .join(dir.file_name());
-            log::info!(
+            log::debug!(
                 "Copying {} to {}",
                 dir.file_name().to_string_lossy(),
                 path.to_string_lossy()
@@ -60,7 +60,7 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
             fs::copy(dir.path(), path)?;
         }
     } else {
-        log::info!("Assets directory does not exist, skipping");
+        log::debug!("Assets directory does not exist, skipping");
     }
 
     Ok(())
@@ -78,7 +78,7 @@ pub fn render_collections(
             let dir = entry?;
 
             if dir.metadata()?.is_file() {
-                log::info!(
+                log::warn!(
                     "Entry {} is a file; this is not allowed, skipping",
                     dir.file_name().to_string_lossy()
                 );
@@ -112,7 +112,7 @@ pub fn render_collections(
                     .to_string_lossy()
                     != "md"
                 {
-                    log::error!(
+                    log::warn!(
                         "File {} is not a markdown file, skipping",
                         content_dir.file_name().to_string_lossy()
                     );
@@ -139,7 +139,7 @@ pub fn render_collections(
             }
         }
     } else {
-        log::info!("Content directory does not exist, skipping");
+        log::debug!("Content directory does not exist, skipping");
     }
 
     Ok(())
