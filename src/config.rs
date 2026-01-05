@@ -1,22 +1,47 @@
 use std::collections::HashMap;
 
-use facet::Facet;
+use serde::Deserialize;
 
-#[derive(Facet)]
+#[derive(Deserialize)]
 pub struct Config {
-    #[facet(default="./dist".to_string())]
+    #[serde(default = "default_output_directory")]
     pub output_directory: String,
-    #[facet(default="./pages".to_string())]
+    #[serde(default = "default_pages_directory")]
     pub pages_directory: String,
-    #[facet(default="./layouts".to_string())]
+    #[serde(default = "default_layouts_directory")]
     pub layouts_directory: String,
-    #[facet(default="./partials".to_string())]
+    #[serde(default = "default_partials_directory")]
     pub partials_directory: String,
-    #[facet(default="./assets".to_string())]
+    #[serde(default = "default_assets_directory")]
     pub assets_directory: String,
-    #[facet(default="./content".to_string())]
+    #[serde(default = "default_content_directory")]
     pub content_directory: String,
-    pub global: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub global: Option<HashMap<String, serde_json::Value>>,
+}
+
+fn default_output_directory() -> String {
+    "./dist".to_string()
+}
+
+fn default_pages_directory() -> String {
+    "./pages".to_string()
+}
+
+fn default_layouts_directory() -> String {
+    "./layouts".to_string()
+}
+
+fn default_partials_directory() -> String {
+    "./partials".to_string()
+}
+
+fn default_assets_directory() -> String {
+    "./assets".to_string()
+}
+
+fn default_content_directory() -> String {
+    "./content".to_string()
 }
 
 #[cfg(test)]
@@ -54,8 +79,8 @@ mod tests {
     #[test]
     fn test_config_with_global_data() {
         let mut global = HashMap::new();
-        global.insert("site_name".to_string(), "My Site".to_string());
-        global.insert("author".to_string(), "John Doe".to_string());
+        global.insert("site_name".to_string(), serde_json::json!("My Site"));
+        global.insert("author".to_string(), serde_json::json!("John Doe"));
 
         let config = Config {
             output_directory: "./dist".to_string(),
@@ -69,8 +94,14 @@ mod tests {
 
         assert!(config.global.is_some());
         let global_data = config.global.unwrap();
-        assert_eq!(global_data.get("site_name"), Some(&"My Site".to_string()));
-        assert_eq!(global_data.get("author"), Some(&"John Doe".to_string()));
+        assert_eq!(
+            global_data.get("site_name"),
+            Some(&serde_json::json!("My Site"))
+        );
+        assert_eq!(
+            global_data.get("author"),
+            Some(&serde_json::json!("John Doe"))
+        );
     }
 
     #[test]

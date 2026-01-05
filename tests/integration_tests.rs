@@ -234,8 +234,8 @@ fn test_workflow_with_global_data() {
 
     // Create config with global data
     let mut global = std::collections::HashMap::new();
-    global.insert("global_title".to_string(), "My Website".to_string());
-    global.insert("global_author".to_string(), "John Doe".to_string());
+    global.insert("global_title".to_string(), serde_json::json!("My Website"));
+    global.insert("global_author".to_string(), serde_json::json!("John Doe"));
 
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
@@ -380,7 +380,7 @@ fn test_template_with_conditionals() {
         .expect("Failed to write template");
 
     let mut global = std::collections::HashMap::new();
-    global.insert("show_message".to_string(), "true".to_string());
+    global.insert("show_message".to_string(), serde_json::json!("true"));
 
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
