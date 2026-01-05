@@ -1,5 +1,6 @@
 pub mod collection;
 pub mod config;
+pub mod context;
 pub mod renderer;
 
 use std::{
@@ -7,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::renderer::{HandlebarsRenderer, Renderer};
+use crate::{
+    context::merge_contexts,
+    renderer::{HandlebarsRenderer, Renderer},
+};
 
 pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
@@ -125,7 +129,10 @@ pub fn render_collections(
 
                 let rendered_result = render.render(
                     fs::read_to_string(&details_page_path)?,
-                    serde_json::json!({"content": rendered_content}),
+                    merge_contexts(
+                        parsed_config,
+                        serde_json::json!({"content": rendered_content}),
+                    ),
                 );
 
                 fs::write(&rendered_output_path, &rendered_result)?;
