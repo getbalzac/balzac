@@ -1,5 +1,5 @@
-use facet_toml::from_str;
 use std::fs;
+use toml::from_str;
 
 use balzac::{
     add_assets, config, make_dist_folder, render_collections, render_static_pages, renderer,
