@@ -23,7 +23,7 @@ impl<'a> HandlebarsRenderer<'a> {
                 .expect("Could not read partials directory")
             {
                 let dir = entry.expect("Could not get directory handler");
-                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                log::debug!("Parsing partial {}", dir.file_name().to_string_lossy());
                 let partial_path = dir.path();
                 let partial_content =
                     fs::read_to_string(&partial_path).expect("Cannot read partial file content");
@@ -33,7 +33,7 @@ impl<'a> HandlebarsRenderer<'a> {
                     .expect("Cannot register partial");
             }
         } else {
-            log::info!("Could not find partial directory, skipping register step");
+            log::debug!("Could not find partial directory, skipping register step");
         }
     }
 
@@ -46,7 +46,7 @@ impl<'a> HandlebarsRenderer<'a> {
                 .expect("Could not read layouts directory")
             {
                 let dir = entry.expect("Could not get directory handler");
-                log::info!("Parsing partial {}", dir.file_name().to_string_lossy());
+                log::debug!("Parsing partial {}", dir.file_name().to_string_lossy());
                 let partial_path = dir.path();
                 let partial_content =
                     fs::read_to_string(&partial_path).expect("Cannot read layout file content");
@@ -56,7 +56,7 @@ impl<'a> HandlebarsRenderer<'a> {
                     .expect("Cannot register layout");
             }
         } else {
-            log::info!("Could not find layouts directory, skipping register step");
+            log::debug!("Could not find layouts directory, skipping register step");
         }
     }
 }

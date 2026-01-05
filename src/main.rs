@@ -9,30 +9,40 @@ use balzac::renderer::Renderer;
 
 fn main() {
     colog::init();
+    let start = std::time::Instant::now();
     let config_content = fs::read_to_string("./balzac.toml").expect("Config file not found");
     let parsed_config: config::Config = from_str(&config_content).expect("Could not parse config");
-    log::info!("Parsed configuration file");
+    log::info!("Parsed configuration file (took {:?})", start.elapsed());
+    let start = std::time::Instant::now();
     let mut render: renderer::HandlebarsRenderer<'_> =
         renderer::HandlebarsRenderer::new(&parsed_config);
     render.init(&parsed_config);
-    log::info!("Renderer is initialized");
+    log::info!("Renderer is initialized (took {:?})", start.elapsed());
+    let start = std::time::Instant::now();
     if let Err(e) = make_dist_folder(&parsed_config) {
         log::error!("Error creating output directory: {}", e);
         std::process::exit(1);
     }
+    log::info!("Created output directory (took {:?})", start.elapsed());
 
+    let start = std::time::Instant::now();
     if let Err(e) = render_static_pages(&parsed_config, &render) {
         log::error!("Error rendering static pages: {}", e);
         std::process::exit(1);
     }
+    log::info!("Rendered static pages (took {:?})", start.elapsed());
 
+    let start = std::time::Instant::now();
     if let Err(e) = render_collections(&parsed_config, &render) {
         log::error!("Error rendering collections: {}", e);
         std::process::exit(1);
     }
+    log::info!("Rendered collections (took {:?})", start.elapsed());
 
+    let start = std::time::Instant::now();
     if let Err(e) = add_assets(&parsed_config) {
         log::error!("Error handling assets: {}", e);
         std::process::exit(1);
     }
+    log::info!("Handled assets (took {:?})", start.elapsed());
 }
