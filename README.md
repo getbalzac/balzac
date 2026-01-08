@@ -35,6 +35,18 @@ To use a collection, create a subfolder in the content_directory folder with the
 
 The next step is to create a file in the pages_directory called <name_of_your_collection>/details.hbs (i.e. posts/details.hbs).
 
+### Frontmatter
+
+All frontmatter present in the collection documents will be available in the template under the fm namespace.
+
+```md
+---
+title: "Test"
+---
+```
+
+will be available under `fm.title`
+
 ## Development
 
 All required tooling can be installed using [mise](https://mise.jdx.dev/) with `mise install`
