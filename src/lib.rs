@@ -121,7 +121,10 @@ pub fn render_collections(
                 let content_filename = content_dir_path
                     .file_stem()
                     .expect("Could not get collection entry file stem");
-                let rendered_content = collection::parse_markdown(content_dir.path())?;
+
+                let file_content = fs::read_to_string(content_dir.path())?;
+                let rendered_content = collection::parse_markdown(&file_content)?;
+                let file_frontmatter = collection::get_frontmatter(&file_content);
                 let rendered_output_path = PathBuf::from(&parsed_config.output_directory)
                     .join(dir.file_name())
                     .join(content_filename)
@@ -131,7 +134,7 @@ pub fn render_collections(
                     fs::read_to_string(&details_page_path)?,
                     merge_contexts(
                         parsed_config,
-                        serde_json::json!({"content": rendered_content}),
+                        serde_json::json!({"content": rendered_content, "fm": &file_frontmatter}),
                     ),
                 );
 
