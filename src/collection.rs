@@ -10,11 +10,19 @@ pub struct MarkdownOutput {
 
 pub fn parse_markdown(file_content: &str) -> std::io::Result<MarkdownOutput> {
     let matter = Matter::<YAML>::new();
-    let parsed: ParsedEntity = matter
-        .parse(file_content)
-        .expect("Could not get frontmatter");
+    let parsed: ParsedEntity = matter.parse(file_content).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Could not get frontmatter: {}", e),
+        )
+    })?;
     let parsed_md = markdown::to_html_with_options(&parsed.content, &markdown::Options::gfm())
-        .expect("Could not parse markdown file");
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Could not parse markdown file: {}", e),
+            )
+        })?;
     let fm = get_frontmatter(&parsed);
     Ok(MarkdownOutput {
         content: parsed_md,
