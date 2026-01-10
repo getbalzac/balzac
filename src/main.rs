@@ -26,13 +26,28 @@ fn main() {
         log::info!("Found build_before hook, running");
         let start = std::time::Instant::now();
         let parts = split(hook).expect("Invalid command syntax");
+        if parts.is_empty() {
+            log::error!("build_before hook is empty");
+            std::process::exit(1);
+        }
         let mut cmd = Command::new(&parts[0]);
         for arg in &parts[1..] {
             cmd.arg(arg);
         }
-        if let Err(e) = cmd.status() {
-            log::error!("Error running build_before hook: {}", e);
-            std::process::exit(1);
+        match cmd.status() {
+            Ok(status) => {
+                if !status.success() {
+                    log::error!(
+                        "build_before hook failed with exit code: {:?}",
+                        status.code()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                log::error!("Error running build_before hook: {}", e);
+                std::process::exit(1);
+            }
         }
         log::info!("build_before hook completed (took {:?})", start.elapsed());
     }
@@ -63,13 +78,28 @@ fn main() {
         log::info!("Found build_after hook, running");
         let start = std::time::Instant::now();
         let parts = split(hook).expect("Invalid command syntax");
+        if parts.is_empty() {
+            log::error!("build_before hook is empty");
+            std::process::exit(1);
+        }
         let mut cmd = Command::new(&parts[0]);
         for arg in &parts[1..] {
             cmd.arg(arg);
         }
-        if let Err(e) = cmd.status() {
-            log::error!("Error running build_after hook: {}", e);
-            std::process::exit(1);
+        match cmd.status() {
+            Ok(status) => {
+                if !status.success() {
+                    log::error!(
+                        "build_after hook failed with exit code: {:?}",
+                        status.code()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                log::error!("Error running build_after hook: {}", e);
+                std::process::exit(1);
+            }
         }
         log::info!("build_after hook completed (took {:?})", start.elapsed());
     }
