@@ -3,6 +3,14 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+pub struct Hooks {
+    #[serde(default)]
+    pub build_before: Option<String>,
+    #[serde(default)]
+    pub build_after: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct Config {
     #[serde(default = "default_output_directory")]
     pub output_directory: String,
@@ -18,6 +26,8 @@ pub struct Config {
     pub content_directory: String,
     #[serde(default)]
     pub global: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub hooks: Option<Hooks>,
 }
 
 fn default_output_directory() -> String {

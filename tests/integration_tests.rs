@@ -69,6 +69,7 @@ fn test_partials_registration() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     let mut renderer = HandlebarsRenderer::new(&config);
@@ -101,6 +102,7 @@ fn test_partials_registration_without_folder() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     let mut renderer = HandlebarsRenderer::new(&config);
@@ -139,6 +141,7 @@ fn test_full_workflow_single_page() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     // Run the workflow
@@ -187,6 +190,7 @@ fn test_full_workflow_multiple_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     // Run the workflow
@@ -245,6 +249,7 @@ fn test_workflow_with_global_data() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: Some(global),
+        hooks: None,
     };
 
     // Run the workflow
@@ -282,6 +287,7 @@ fn test_make_dist_folder_creates_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -315,6 +321,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -350,6 +357,7 @@ fn test_workflow_preserves_file_extensions() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
+        hooks: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -390,6 +398,7 @@ fn test_template_with_conditionals() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         global: Some(global),
+        hooks: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
