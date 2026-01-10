@@ -72,6 +72,13 @@ fn main() {
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
 
+    let start = std::time::Instant::now();
+    if let Err(e) = add_assets(&parsed_config) {
+        log::error!("Error handling assets: {}", e);
+        std::process::exit(1);
+    }
+    log::info!("Handled assets (took {:?})", start.elapsed());
+
     if let Some(hooks) = &parsed_config.hooks
         && let Some(hook) = &hooks.build_after
     {
@@ -79,7 +86,7 @@ fn main() {
         let start = std::time::Instant::now();
         let parts = split(hook).expect("Invalid command syntax");
         if parts.is_empty() {
-            log::error!("build_before hook is empty");
+            log::error!("build_after hook is empty");
             std::process::exit(1);
         }
         let mut cmd = Command::new(&parts[0]);
@@ -103,11 +110,4 @@ fn main() {
         }
         log::info!("build_after hook completed (took {:?})", start.elapsed());
     }
-
-    let start = std::time::Instant::now();
-    if let Err(e) = add_assets(&parsed_config) {
-        log::error!("Error handling assets: {}", e);
-        std::process::exit(1);
-    }
-    log::info!("Handled assets (took {:?})", start.elapsed());
 }
