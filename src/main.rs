@@ -20,23 +20,11 @@ fn main() {
         renderer::HandlebarsRenderer::new(&parsed_config);
     render.init(&parsed_config);
     log::info!("Renderer is initialized (took {:?})", start.elapsed());
-    if parsed_config.hooks.is_some()
-        && parsed_config
-            .hooks
-            .as_ref()
-            .expect("could not get hooks")
-            .build_before
-            .is_some()
+    if let Some(hooks) = &parsed_config.hooks
+        && let Some(hook) = &hooks.build_before
     {
         log::info!("Found build_before hook, running");
         let start = std::time::Instant::now();
-        let hook = &parsed_config
-            .hooks
-            .as_ref()
-            .unwrap()
-            .build_before
-            .as_ref()
-            .unwrap();
         let parts = split(hook).expect("Invalid command syntax");
         let mut cmd = Command::new(&parts[0]);
         for arg in &parts[1..] {
@@ -69,17 +57,11 @@ fn main() {
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
 
-    if parsed_config.hooks.is_some() && parsed_config.hooks.as_ref().unwrap().build_after.is_some()
+    if let Some(hooks) = &parsed_config.hooks
+        && let Some(hook) = &hooks.build_after
     {
         log::info!("Found build_after hook, running");
         let start = std::time::Instant::now();
-        let hook = &parsed_config
-            .hooks
-            .as_ref()
-            .unwrap()
-            .build_after
-            .as_ref()
-            .unwrap();
         let parts = split(hook).expect("Invalid command syntax");
         let mut cmd = Command::new(&parts[0]);
         for arg in &parts[1..] {
