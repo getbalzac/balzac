@@ -68,6 +68,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -82,6 +83,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -100,6 +102,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: Some(global),
+            hooks: None,
         };
 
         assert!(config.global.is_some());
@@ -124,6 +127,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
 
         assert_eq!(config.output_directory, "./build");
