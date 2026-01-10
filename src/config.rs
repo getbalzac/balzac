@@ -3,6 +3,14 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+pub struct Hooks {
+    #[serde(default)]
+    pub build_before: Option<String>,
+    #[serde(default)]
+    pub build_after: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct Config {
     #[serde(default = "default_output_directory")]
     pub output_directory: String,
@@ -18,6 +26,8 @@ pub struct Config {
     pub content_directory: String,
     #[serde(default)]
     pub global: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub hooks: Option<Hooks>,
 }
 
 fn default_output_directory() -> String {
@@ -58,6 +68,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -72,6 +83,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -90,6 +102,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: Some(global),
+            hooks: None,
         };
 
         assert!(config.global.is_some());
@@ -114,6 +127,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             global: None,
+            hooks: None,
         };
 
         assert_eq!(config.output_directory, "./build");

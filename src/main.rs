@@ -1,4 +1,6 @@
+use shell_words::split;
 use std::fs;
+use std::process::Command;
 use toml::from_str;
 
 use balzac::{
@@ -18,6 +20,37 @@ fn main() {
         renderer::HandlebarsRenderer::new(&parsed_config);
     render.init(&parsed_config);
     log::info!("Renderer is initialized (took {:?})", start.elapsed());
+    if let Some(hooks) = &parsed_config.hooks
+        && let Some(hook) = &hooks.build_before
+    {
+        log::info!("Found build_before hook, running");
+        let start = std::time::Instant::now();
+        let parts = split(hook).expect("Invalid command syntax");
+        if parts.is_empty() {
+            log::error!("build_before hook is empty");
+            std::process::exit(1);
+        }
+        let mut cmd = Command::new(&parts[0]);
+        for arg in &parts[1..] {
+            cmd.arg(arg);
+        }
+        match cmd.status() {
+            Ok(status) => {
+                if !status.success() {
+                    log::error!(
+                        "build_before hook failed with exit code: {:?}",
+                        status.code()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                log::error!("Error running build_before hook: {}", e);
+                std::process::exit(1);
+            }
+        }
+        log::info!("build_before hook completed (took {:?})", start.elapsed());
+    }
     let start = std::time::Instant::now();
     if let Err(e) = make_dist_folder(&parsed_config) {
         log::error!("Error creating output directory: {}", e);
@@ -45,4 +78,36 @@ fn main() {
         std::process::exit(1);
     }
     log::info!("Handled assets (took {:?})", start.elapsed());
+
+    if let Some(hooks) = &parsed_config.hooks
+        && let Some(hook) = &hooks.build_after
+    {
+        log::info!("Found build_after hook, running");
+        let start = std::time::Instant::now();
+        let parts = split(hook).expect("Invalid command syntax");
+        if parts.is_empty() {
+            log::error!("build_after hook is empty");
+            std::process::exit(1);
+        }
+        let mut cmd = Command::new(&parts[0]);
+        for arg in &parts[1..] {
+            cmd.arg(arg);
+        }
+        match cmd.status() {
+            Ok(status) => {
+                if !status.success() {
+                    log::error!(
+                        "build_after hook failed with exit code: {:?}",
+                        status.code()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                log::error!("Error running build_after hook: {}", e);
+                std::process::exit(1);
+            }
+        }
+        log::info!("build_after hook completed (took {:?})", start.elapsed());
+    }
 }
