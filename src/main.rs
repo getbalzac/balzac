@@ -25,28 +25,30 @@ fn main() {
         );
     let matches = cmd.get_matches();
 
-    match matches.subcommand() {
-        Some(("build", sub_matches)) => {
-            let _base_path = match sub_matches.try_get_one::<std::path::PathBuf>("root") {
-                Ok(Some(path)) => path.clone(),
-                Ok(None) => std::env::current_dir().unwrap(),
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            };
-        }
+    let base_path = match matches.subcommand() {
+        Some(("build", sub_matches)) => match sub_matches.try_get_one::<std::path::PathBuf>("root")
+        {
+            Ok(Some(path)) => path.clone(),
+            Ok(None) => std::env::current_dir().unwrap(),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
         _ => unreachable!(),
-    }
+    };
 
     let start = std::time::Instant::now();
-    let config_content = fs::read_to_string("./balzac.toml").expect("Config file not found");
+    let config_path = base_path.join("balzac.toml");
+    let config_content = fs::read_to_string(&config_path).expect("Config file not found");
     let parsed_config: config::Config = from_str(&config_content).expect("Could not parse config");
     log::info!("Parsed configuration file (took {:?})", start.elapsed());
+
+    let resolved_config = parsed_config.resolve(&base_path);
     let start = std::time::Instant::now();
     let mut render: renderer::HandlebarsRenderer<'_> =
-        renderer::HandlebarsRenderer::new(&parsed_config);
-    render.init(&parsed_config);
+        renderer::HandlebarsRenderer::new(&resolved_config);
+    render.init(&resolved_config);
     log::info!("Renderer is initialized (took {:?})", start.elapsed());
     if let Some(hooks) = &parsed_config.hooks
         && let Some(hook) = &hooks.build_before
@@ -80,28 +82,28 @@ fn main() {
         log::info!("build_before hook completed (took {:?})", start.elapsed());
     }
     let start = std::time::Instant::now();
-    if let Err(e) = make_dist_folder(&parsed_config) {
+    if let Err(e) = make_dist_folder(&resolved_config) {
         log::error!("Error creating output directory: {}", e);
         std::process::exit(1);
     }
     log::info!("Created output directory (took {:?})", start.elapsed());
 
     let start = std::time::Instant::now();
-    if let Err(e) = render_static_pages(&parsed_config, &render) {
+    if let Err(e) = render_static_pages(&resolved_config, &render) {
         log::error!("Error rendering static pages: {}", e);
         std::process::exit(1);
     }
     log::info!("Rendered static pages (took {:?})", start.elapsed());
 
     let start = std::time::Instant::now();
-    if let Err(e) = render_collections(&parsed_config, &render) {
+    if let Err(e) = render_collections(&resolved_config, &render) {
         log::error!("Error rendering collections: {}", e);
         std::process::exit(1);
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
 
     let start = std::time::Instant::now();
-    if let Err(e) = add_assets(&parsed_config) {
+    if let Err(e) = add_assets(&resolved_config) {
         log::error!("Error handling assets: {}", e);
         std::process::exit(1);
     }

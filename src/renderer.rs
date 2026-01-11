@@ -1,12 +1,12 @@
-use std::{fs, path::PathBuf};
+use std::fs;
 
 use handlebars::Handlebars;
 
 use crate::{config, vite::parse_manifest};
 
 pub trait Renderer {
-    fn new(configuration: &config::Config) -> Self;
-    fn init(&mut self, configuration: &config::Config);
+    fn new(configuration: &config::ResolvedConfig) -> Self;
+    fn init(&mut self, configuration: &config::ResolvedConfig);
     fn render(&self, template: String, data: serde_json::Value) -> String;
 }
 
@@ -15,7 +15,7 @@ pub struct HandlebarsRenderer<'a> {
 }
 
 impl<'a> HandlebarsRenderer<'a> {
-    fn register_partials(&mut self, configuration: &config::Config) {
+    fn register_partials(&mut self, configuration: &config::ResolvedConfig) {
         let partial_dir_exists = fs::exists(&configuration.partials_directory)
             .expect("Could not check if partial dir exists");
         if partial_dir_exists {
@@ -37,7 +37,7 @@ impl<'a> HandlebarsRenderer<'a> {
         }
     }
 
-    fn register_layouts(&mut self, configuration: &config::Config) {
+    fn register_layouts(&mut self, configuration: &config::ResolvedConfig) {
         let layouts_dir_exists = fs::exists(&configuration.layouts_directory)
             .expect("Could not check if partial layouts dir exists");
 
@@ -60,24 +60,24 @@ impl<'a> HandlebarsRenderer<'a> {
         }
     }
 
-    pub fn register_helpers(&mut self, configuration: &config::Config) {
+    pub fn register_helpers(&mut self, configuration: &config::ResolvedConfig) {
         if let Some(bundler) = &configuration.bundler
             && let Some(vite) = &bundler.vite
             && vite.enabled
         {
-            let manifest_path = PathBuf::from(&vite.manifest_path);
-            parse_manifest(manifest_path);
+            let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
+            parse_manifest(manifest_path, &configuration.output_directory);
         }
     }
 }
 
 impl<'a> Renderer for HandlebarsRenderer<'a> {
-    fn init(&mut self, configuration: &config::Config) {
+    fn init(&mut self, configuration: &config::ResolvedConfig) {
         self.register_partials(configuration);
         self.register_layouts(configuration);
         self.register_helpers(configuration);
     }
-    fn new(_configuration: &config::Config) -> HandlebarsRenderer<'a> {
+    fn new(_configuration: &config::ResolvedConfig) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();
 
         HandlebarsRenderer { registry: reg }

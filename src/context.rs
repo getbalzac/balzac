@@ -1,7 +1,7 @@
 use crate::config;
 
 pub fn merge_contexts(
-    configuration: &config::Config,
+    configuration: &config::ResolvedConfig,
     local_context: serde_json::Value,
 ) -> serde_json::Value {
     let global_value = configuration

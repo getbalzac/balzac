@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Hooks {
     #[serde(default)]
     pub build_before: Option<String>,
@@ -10,7 +10,7 @@ pub struct Hooks {
     pub build_after: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ViteBundler {
     #[serde(default)]
     pub enabled: bool,
@@ -18,7 +18,7 @@ pub struct ViteBundler {
     pub manifest_path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Bundler {
     #[serde(default)]
     pub vite: Option<ViteBundler>,
@@ -43,6 +43,39 @@ pub struct Config {
     #[serde(default)]
     pub hooks: Option<Hooks>,
     #[serde(default)]
+    pub bundler: Option<Bundler>,
+}
+
+impl Config {
+    pub fn resolve(&self, root: &std::path::Path) -> ResolvedConfig {
+        ResolvedConfig {
+            output_directory: self.resolve_path(&self.output_directory, root),
+            pages_directory: self.resolve_path(&self.pages_directory, root),
+            layouts_directory: self.resolve_path(&self.layouts_directory, root),
+            partials_directory: self.resolve_path(&self.partials_directory, root),
+            assets_directory: self.resolve_path(&self.assets_directory, root),
+            content_directory: self.resolve_path(&self.content_directory, root),
+            global: self.global.clone(),
+            hooks: self.hooks.clone(),
+            bundler: self.bundler.clone(),
+        }
+    }
+
+    fn resolve_path(&self, path: &str, root: &std::path::Path) -> std::path::PathBuf {
+        let p = std::path::PathBuf::from(path);
+        if p.is_absolute() { p } else { root.join(p) }
+    }
+}
+
+pub struct ResolvedConfig {
+    pub output_directory: std::path::PathBuf,
+    pub pages_directory: std::path::PathBuf,
+    pub layouts_directory: std::path::PathBuf,
+    pub partials_directory: std::path::PathBuf,
+    pub assets_directory: std::path::PathBuf,
+    pub content_directory: std::path::PathBuf,
+    pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
+    pub hooks: Option<Hooks>,
     pub bundler: Option<Bundler>,
 }
 

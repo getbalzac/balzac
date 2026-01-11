@@ -46,7 +46,7 @@ fn setup_test_project() -> (
 fn test_partials_registration() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -73,8 +73,9 @@ fn test_partials_registration() {
         bundler: None,
     };
 
-    let mut renderer = HandlebarsRenderer::new(&config);
-    renderer.init(&config);
+    let resolved_config = config.resolve(&temp_path);
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer.init(&resolved_config);
 
     assert!(
         renderer.registry.get_templates().contains_key("alert"),
@@ -107,8 +108,9 @@ fn test_partials_registration_without_folder() {
         bundler: None,
     };
 
-    let mut renderer = HandlebarsRenderer::new(&config);
-    renderer.init(&config);
+    let resolved_config = config.resolve(&_temp_path);
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer.init(&resolved_config);
 
     assert!(
         renderer.registry.get_templates().len() == 0,
@@ -147,9 +149,10 @@ fn test_full_workflow_single_page() {
         bundler: None,
     };
 
+    let resolved_config = config.resolve(&_temp_path);
     // Run the workflow
-    make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    render_static_pages(&resolved_config, &HandlebarsRenderer::new(&resolved_config))
         .expect("Failed to render static pages");
 
     // Verify output
@@ -197,9 +200,10 @@ fn test_full_workflow_multiple_pages() {
         bundler: None,
     };
 
+    let resolved_config = config.resolve(&_temp_path);
     // Run the workflow
-    make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    render_static_pages(&resolved_config, &HandlebarsRenderer::new(&resolved_config))
         .expect("Failed to render static pages");
 
     // Verify all outputs exist
@@ -257,9 +261,10 @@ fn test_workflow_with_global_data() {
         bundler: None,
     };
 
+    let resolved_config = config.resolve(&_temp_path);
     // Run the workflow
-    make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    render_static_pages(&resolved_config, &HandlebarsRenderer::new(&resolved_config))
         .expect("Failed to render static pages");
 
     // Verify output with rendered global data
@@ -271,9 +276,9 @@ fn test_workflow_with_global_data() {
 #[test]
 fn test_make_dist_folder_creates_directory() {
     let (
-        _temp_dir,
+        _temp,
         temp_path,
-        _pages_dir,
+        pages_dir,
         output_dir,
         layouts_dir,
         partials_dir,
@@ -296,7 +301,8 @@ fn test_make_dist_folder_creates_directory() {
         bundler: None,
     };
 
-    make_dist_folder(&config).expect("Failed to make dist folder");
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
     assert!(output_dir.exists());
     assert!(output_dir.is_dir());
@@ -331,7 +337,8 @@ fn test_make_dist_folder_recreates_existing_directory() {
         bundler: None,
     };
 
-    make_dist_folder(&config).expect("Failed to make dist folder");
+    let resolved_config = config.resolve(&_temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
     // Directory should exist but be empty
     assert!(output_dir.exists());
@@ -368,8 +375,9 @@ fn test_workflow_preserves_file_extensions() {
         bundler: None,
     };
 
-    make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+    let resolved_config = config.resolve(&_temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    render_static_pages(&resolved_config, &HandlebarsRenderer::new(&resolved_config))
         .expect("Failed to render static pages");
 
     // Both should be converted to .html output
@@ -410,8 +418,9 @@ fn test_template_with_conditionals() {
         bundler: None,
     };
 
-    make_dist_folder(&config).expect("Failed to make dist folder");
-    render_static_pages(&config, &HandlebarsRenderer::new(&config))
+    let resolved_config = config.resolve(&_temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    render_static_pages(&resolved_config, &HandlebarsRenderer::new(&resolved_config))
         .expect("Failed to render static pages");
 
     let output_content =
