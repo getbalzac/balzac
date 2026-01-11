@@ -18,14 +18,24 @@ fn main() {
             clap::command!("build")
                 .about("Build project using balzac")
                 .arg(
-                    clap::arg!(--"root-dir" <PATH>)
-                        .value_parser(clap::value_parser!(std::path::PathBuf)),
+                    clap::arg!(--root <PATH>)
+                        .value_parser(clap::value_parser!(std::path::PathBuf))
+                        .required(false),
                 ),
         );
     let matches = cmd.get_matches();
 
     match matches.subcommand() {
-        Some(("build", _sub_matches)) => {}
+        Some(("build", sub_matches)) => {
+            let _base_path = match sub_matches.try_get_one::<std::path::PathBuf>("root") {
+                Ok(Some(path)) => path.clone(),
+                Ok(None) => std::env::current_dir().unwrap(),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+        }
         _ => unreachable!(),
     }
 
