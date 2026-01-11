@@ -70,6 +70,7 @@ fn test_partials_registration() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     let mut renderer = HandlebarsRenderer::new(&config);
@@ -103,6 +104,7 @@ fn test_partials_registration_without_folder() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     let mut renderer = HandlebarsRenderer::new(&config);
@@ -142,6 +144,7 @@ fn test_full_workflow_single_page() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     // Run the workflow
@@ -191,6 +194,7 @@ fn test_full_workflow_multiple_pages() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     // Run the workflow
@@ -250,6 +254,7 @@ fn test_workflow_with_global_data() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: Some(global),
         hooks: None,
+        bundler: None,
     };
 
     // Run the workflow
@@ -288,6 +293,7 @@ fn test_make_dist_folder_creates_directory() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -322,6 +328,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -358,6 +365,7 @@ fn test_workflow_preserves_file_extensions() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: None,
         hooks: None,
+        bundler: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
@@ -399,6 +407,7 @@ fn test_template_with_conditionals() {
         content_directory: content_dir.to_string_lossy().to_string(),
         global: Some(global),
         hooks: None,
+        bundler: None,
     };
 
     make_dist_folder(&config).expect("Failed to make dist folder");
