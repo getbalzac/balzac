@@ -12,7 +12,9 @@ pub struct Hooks {
 
 #[derive(Deserialize)]
 pub struct ViteBundler {
-    #[serde(default = "default_output_directory")]
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_vite_manifest_path")]
     pub manifest_path: String,
 }
 
@@ -42,6 +44,10 @@ pub struct Config {
     pub hooks: Option<Hooks>,
     #[serde(default)]
     pub bundler: Option<Bundler>,
+}
+
+fn default_vite_manifest_path() -> String {
+    "dist/.vite/manifest.json".to_string()
 }
 
 fn default_output_directory() -> String {

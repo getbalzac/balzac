@@ -2,6 +2,7 @@ pub mod collection;
 pub mod config;
 pub mod context;
 pub mod renderer;
+pub mod vite;
 
 use std::{
     fs,

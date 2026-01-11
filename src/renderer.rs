@@ -1,8 +1,8 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use handlebars::Handlebars;
 
-use crate::config;
+use crate::{config, vite::parse_manifest};
 
 pub trait Renderer {
     fn new(configuration: &config::Config) -> Self;
@@ -59,12 +59,23 @@ impl<'a> HandlebarsRenderer<'a> {
             log::debug!("Could not find layouts directory, skipping register step");
         }
     }
+
+    pub fn register_helpers(&mut self, configuration: &config::Config) {
+        if let Some(bundler) = &configuration.bundler
+            && let Some(vite) = &bundler.vite
+            && vite.enabled
+        {
+            let manifest_path = PathBuf::from(&vite.manifest_path);
+            parse_manifest(manifest_path);
+        }
+    }
 }
 
 impl<'a> Renderer for HandlebarsRenderer<'a> {
     fn init(&mut self, configuration: &config::Config) {
         self.register_partials(configuration);
         self.register_layouts(configuration);
+        self.register_helpers(configuration);
     }
     fn new(_configuration: &config::Config) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();
