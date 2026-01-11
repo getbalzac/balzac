@@ -2,29 +2,27 @@ pub mod collection;
 pub mod config;
 pub mod context;
 pub mod renderer;
+pub mod vite;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use crate::{
     context::merge_contexts,
     renderer::{HandlebarsRenderer, Renderer},
 };
 
-pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
+pub fn make_dist_folder(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
     if !dir_exists {
         log::debug!(
             "Creating output directory {}",
-            parsed_config.output_directory
+            parsed_config.output_directory.display()
         );
         fs::create_dir(&parsed_config.output_directory)?;
     } else {
         log::debug!(
             "Output directory {} already exists, recreating",
-            parsed_config.output_directory
+            parsed_config.output_directory.display()
         );
         fs::remove_dir_all(&parsed_config.output_directory)?;
         fs::create_dir(&parsed_config.output_directory)?;
@@ -32,11 +30,11 @@ pub fn make_dist_folder(parsed_config: &config::Config) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
+pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.assets_directory)?;
 
     if dir_exists {
-        fs::create_dir(PathBuf::from(&parsed_config.output_directory).join("assets"))?;
+        fs::create_dir(parsed_config.output_directory.join("assets"))?;
         for entry in fs::read_dir(&parsed_config.assets_directory)? {
             let dir = entry?;
 
@@ -49,13 +47,14 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
                 continue;
             }
 
-            let path = PathBuf::from(&parsed_config.output_directory)
+            let path = parsed_config
+                .output_directory
                 .join("assets")
                 .join(dir.file_name());
             log::debug!(
                 "Copying {} to {}",
                 dir.file_name().to_string_lossy(),
-                path.to_string_lossy()
+                path.display()
             );
             fs::copy(dir.path(), path)?;
         }
@@ -67,7 +66,7 @@ pub fn add_assets(parsed_config: &config::Config) -> std::io::Result<()> {
 }
 
 pub fn render_collections(
-    parsed_config: &config::Config,
+    parsed_config: &config::ResolvedConfig,
     render: &HandlebarsRenderer,
 ) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.content_directory)
@@ -85,8 +84,9 @@ pub fn render_collections(
                 continue;
             }
             log::info!("Rendering collection {}", dir.file_name().to_string_lossy());
-            fs::create_dir(PathBuf::from(&parsed_config.output_directory).join(dir.file_name()))?;
-            let details_page_path = PathBuf::from(&parsed_config.pages_directory)
+            fs::create_dir(parsed_config.output_directory.join(dir.file_name()))?;
+            let details_page_path = parsed_config
+                .pages_directory
                 .join(dir.file_name())
                 .join("details.hbs");
             let has_details_page = fs::exists(&details_page_path)?;
@@ -99,8 +99,7 @@ pub fn render_collections(
                 continue;
             }
 
-            let content_dir_path =
-                PathBuf::from(&parsed_config.content_directory).join(dir.file_name());
+            let content_dir_path = parsed_config.content_directory.join(dir.file_name());
 
             for content_entry in fs::read_dir(&content_dir_path)? {
                 let content_dir = content_entry?;
@@ -124,7 +123,8 @@ pub fn render_collections(
 
                 let file_content = fs::read_to_string(content_dir.path())?;
                 let rendered_content = collection::parse_markdown(&file_content)?;
-                let rendered_output_path = PathBuf::from(&parsed_config.output_directory)
+                let rendered_output_path = parsed_config
+                    .output_directory
                     .join(dir.file_name())
                     .join(content_filename)
                     .with_extension("html");
@@ -148,7 +148,7 @@ pub fn render_collections(
 }
 
 pub fn render_static_pages(
-    parsed_config: &config::Config,
+    parsed_config: &config::ResolvedConfig,
     render: &HandlebarsRenderer,
 ) -> std::io::Result<()> {
     for entry in fs::read_dir(&parsed_config.pages_directory)? {
@@ -168,7 +168,8 @@ pub fn render_static_pages(
         let rendered = render.render(content, serde_json::json!(&parsed_config.global));
         let file_path = &entry_path.file_stem().expect("Could not get file stem");
         fs::write(
-            Path::new(&parsed_config.output_directory)
+            parsed_config
+                .output_directory
                 .join(PathBuf::from(file_path).with_extension("html")),
             rendered,
         )?;
