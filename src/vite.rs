@@ -1,6 +1,9 @@
 use serde::Deserialize;
 use serde_json::from_str;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ViteChunk {
@@ -18,8 +21,13 @@ pub struct ViteManifest {
     pub chunks: std::collections::HashMap<String, ViteChunk>,
 }
 
-pub fn parse_manifest(path: PathBuf) -> ViteManifest {
-    let config_content = fs::read_to_string(path).expect("Vite manifest not found");
+pub fn parse_manifest(path: PathBuf, root: &Path) -> ViteManifest {
+    let absolute_path = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    let config_content = fs::read_to_string(&absolute_path).expect("Vite manifest not found");
     let parsed_config: ViteManifest = from_str(&config_content).expect("Could not parse config");
 
     println!("{:?}", parsed_config);
