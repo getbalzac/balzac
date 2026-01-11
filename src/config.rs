@@ -11,6 +11,18 @@ pub struct Hooks {
 }
 
 #[derive(Deserialize)]
+pub struct ViteBundler {
+    #[serde(default = "default_output_directory")]
+    pub manifest_path: String,
+}
+
+#[derive(Deserialize)]
+pub struct Bundler {
+    #[serde(default)]
+    pub vite: Option<ViteBundler>,
+}
+
+#[derive(Deserialize)]
 pub struct Config {
     #[serde(default = "default_output_directory")]
     pub output_directory: String,
@@ -28,6 +40,8 @@ pub struct Config {
     pub global: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub hooks: Option<Hooks>,
+    #[serde(default)]
+    pub bundler: Option<Bundler>,
 }
 
 fn default_output_directory() -> String {
@@ -69,6 +83,7 @@ mod tests {
             content_directory: "./content".to_string(),
             global: None,
             hooks: None,
+            bundler: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -84,6 +99,7 @@ mod tests {
             content_directory: "./content".to_string(),
             global: None,
             hooks: None,
+            bundler: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -103,6 +119,7 @@ mod tests {
             content_directory: "./content".to_string(),
             global: Some(global),
             hooks: None,
+            bundler: None,
         };
 
         assert!(config.global.is_some());
@@ -128,6 +145,7 @@ mod tests {
             content_directory: "./content".to_string(),
             global: None,
             hooks: None,
+            bundler: None,
         };
 
         assert_eq!(config.output_directory, "./build");
