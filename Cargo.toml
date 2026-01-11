@@ -13,6 +13,7 @@ exclude = [
 ]
 
 [dependencies]
+clap = {version = "4.5.54", features = ["cargo"]}
 colog = "1.4.0"
 gray_matter = "0.3.2"
 handlebars = "6.3.2"

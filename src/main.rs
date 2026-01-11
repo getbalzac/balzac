@@ -11,6 +11,24 @@ use balzac::renderer::Renderer;
 
 fn main() {
     colog::init();
+    let cmd = clap::Command::new("balzac")
+        .bin_name("balzac")
+        .subcommand_required(true)
+        .subcommand(
+            clap::command!("build")
+                .about("Build project using balzac")
+                .arg(
+                    clap::arg!(--"root-dir" <PATH>)
+                        .value_parser(clap::value_parser!(std::path::PathBuf)),
+                ),
+        );
+    let matches = cmd.get_matches();
+
+    match matches.subcommand() {
+        Some(("build", _sub_matches)) => {}
+        _ => unreachable!(),
+    }
+
     let start = std::time::Instant::now();
     let config_content = fs::read_to_string("./balzac.toml").expect("Config file not found");
     let parsed_config: config::Config = from_str(&config_content).expect("Could not parse config");
