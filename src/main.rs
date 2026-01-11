@@ -29,7 +29,10 @@ fn main() {
         Some(("build", sub_matches)) => match sub_matches.try_get_one::<std::path::PathBuf>("root")
         {
             Ok(Some(path)) => path.clone(),
-            Ok(None) => std::env::current_dir().unwrap(),
+            Ok(None) => std::env::current_dir().unwrap_or_else(|e| {
+                eprintln!("Error: Could not determine current directory: {}", e);
+                std::process::exit(1);
+            }),
             Err(e) => {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
