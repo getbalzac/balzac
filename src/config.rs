@@ -49,6 +49,7 @@ pub struct Config {
 impl Config {
     pub fn resolve(&self, root: &std::path::Path) -> ResolvedConfig {
         ResolvedConfig {
+            root_directory: root.to_path_buf(),
             output_directory: self.resolve_path(&self.output_directory, root),
             pages_directory: self.resolve_path(&self.pages_directory, root),
             layouts_directory: self.resolve_path(&self.layouts_directory, root),
@@ -68,6 +69,7 @@ impl Config {
 }
 
 pub struct ResolvedConfig {
+    pub root_directory: std::path::PathBuf,
     pub output_directory: std::path::PathBuf,
     pub pages_directory: std::path::PathBuf,
     pub layouts_directory: std::path::PathBuf,

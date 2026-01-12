@@ -2,7 +2,10 @@ use std::fs;
 
 use handlebars::Handlebars;
 
-use crate::{config, vite::parse_manifest};
+use crate::{
+    config,
+    vite::{parse_manifest, vite_url},
+};
 
 pub trait Renderer {
     fn new(configuration: &config::ResolvedConfig) -> Self;
@@ -66,7 +69,13 @@ impl<'a> HandlebarsRenderer<'a> {
             && vite.enabled
         {
             let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
-            parse_manifest(manifest_path, &configuration.output_directory);
+            let manifest = parse_manifest(manifest_path, &configuration.root_directory)
+                .unwrap_or_else(|e| {
+                    log::error!("{}", e);
+                    std::process::exit(1);
+                });
+            let helper = vite_url { manifest };
+            self.registry.register_helper("vite_url", Box::new(helper));
         }
     }
 }
