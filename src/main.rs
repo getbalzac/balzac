@@ -67,6 +67,7 @@ fn main() {
         for arg in &parts[1..] {
             cmd.arg(arg);
         }
+        cmd.current_dir(&base_path);
         match cmd.status() {
             Ok(status) => {
                 if !status.success() {
@@ -126,6 +127,7 @@ fn main() {
         for arg in &parts[1..] {
             cmd.arg(arg);
         }
+        cmd.current_dir(&base_path);
         match cmd.status() {
             Ok(status) => {
                 if !status.success() {
