@@ -69,7 +69,11 @@ impl<'a> HandlebarsRenderer<'a> {
             && vite.enabled
         {
             let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
-            let manifest = parse_manifest(manifest_path, &configuration.root_directory);
+            let manifest = parse_manifest(manifest_path, &configuration.root_directory)
+                .unwrap_or_else(|e| {
+                    log::error!("{}", e);
+                    std::process::exit(1);
+                });
             let helper = vite_url { manifest };
             self.registry.register_helper("vite_url", Box::new(helper));
         }

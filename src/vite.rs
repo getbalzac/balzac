@@ -86,16 +86,25 @@ pub fn get_file(manifest: &ViteManifest, name: &str) -> std::io::Result<String> 
     }
 }
 
-pub fn parse_manifest(path: PathBuf, root: &Path) -> ViteManifest {
+pub fn parse_manifest(path: PathBuf, root: &Path) -> Result<ViteManifest, String> {
     let absolute_path = if path.is_absolute() {
         path
     } else {
         root.join(path)
     };
-    let config_content = fs::read_to_string(&absolute_path).expect("Vite manifest not found");
-    let parsed_config: ViteManifest = from_str(&config_content).expect("Could not parse config");
 
-    println!("{:?}", parsed_config);
+    let config_content = fs::read_to_string(&absolute_path).map_err(|e| {
+        format!(
+            "Failed to read Vite manifest at {}: {}",
+            absolute_path.display(),
+            e
+        )
+    })?;
 
-    parsed_config
+    let parsed_config: ViteManifest =
+        from_str(&config_content).map_err(|e| format!("Failed to parse Vite manifest: {}", e))?;
+
+    log::debug!("Parsed vite manifest: {:?}", parsed_config);
+
+    Ok(parsed_config)
 }
