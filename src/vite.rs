@@ -44,8 +44,8 @@ impl handlebars::HelperDef for vite_url {
                 })
             })?;
         let result = get_file(&self.manifest, name).map_err(|e| {
-            handlebars::RenderError::from(handlebars::RenderErrorReason::HelperNotFound(format!(
-                "vite_url: {}",
+            handlebars::RenderError::from(handlebars::RenderErrorReason::Other(format!(
+                "Asset not found in vite manifest: {}",
                 e
             )))
         })?;
@@ -59,9 +59,11 @@ impl handlebars::HelperDef for vite_url {
 pub struct ViteChunk {
     pub file: Option<String>,
     pub src: Option<String>,
+    #[serde(rename = "isEntry")]
     pub is_entry: Option<bool>,
     pub imports: Option<Vec<String>>,
     pub css: Option<Vec<String>>,
+    #[serde(rename = "dynamicImports")]
     pub dynamic_imports: Option<Vec<String>>,
 }
 
