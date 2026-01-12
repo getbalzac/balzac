@@ -46,13 +46,17 @@ fn main() {
     log::info!("Parsed configuration file (took {:?})", start.elapsed());
 
     let resolved_config = parsed_config.resolve(&base_path);
+
+    let hook_executor = HookExecutor::new(parsed_config.hooks.as_ref(), &base_path);
+    hook_executor.execute(HookPhase::RenderInitBefore);
+
     let start = std::time::Instant::now();
     let mut render: renderer::HandlebarsRenderer<'_> =
         renderer::HandlebarsRenderer::new(&resolved_config);
     render.init(&resolved_config);
     log::info!("Renderer is initialized (took {:?})", start.elapsed());
 
-    let hook_executor = HookExecutor::new(parsed_config.hooks.as_ref(), &base_path);
+    hook_executor.execute(HookPhase::RenderInitAfter);
     hook_executor.execute(HookPhase::BuildBefore);
     let start = std::time::Instant::now();
     if let Err(e) = make_dist_folder(&resolved_config) {
@@ -60,6 +64,8 @@ fn main() {
         std::process::exit(1);
     }
     log::info!("Created output directory (took {:?})", start.elapsed());
+
+    hook_executor.execute(HookPhase::RenderBefore);
 
     let start = std::time::Instant::now();
     if let Err(e) = render_static_pages(&resolved_config, &render) {
@@ -74,6 +80,8 @@ fn main() {
         std::process::exit(1);
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
+
+    hook_executor.execute(HookPhase::RenderAfter);
 
     let start = std::time::Instant::now();
     if let Err(e) = add_assets(&resolved_config) {

@@ -9,6 +9,10 @@ use std::time::Instant;
 pub enum HookPhase {
     BuildBefore,
     BuildAfter,
+    RenderInitBefore,
+    RenderInitAfter,
+    RenderBefore,
+    RenderAfter,
 }
 
 impl HookPhase {
@@ -17,6 +21,10 @@ impl HookPhase {
         match self {
             HookPhase::BuildBefore => "build_before",
             HookPhase::BuildAfter => "build_after",
+            HookPhase::RenderInitBefore => "render_init_before",
+            HookPhase::RenderInitAfter => "render_init_after",
+            HookPhase::RenderBefore => "render_before",
+            HookPhase::RenderAfter => "render_after",
         }
     }
 }
@@ -41,6 +49,10 @@ impl<'a> HookExecutor<'a> {
         match phase {
             HookPhase::BuildBefore => hooks.build_before.as_ref(),
             HookPhase::BuildAfter => hooks.build_after.as_ref(),
+            HookPhase::RenderInitBefore => hooks.render_init_before.as_ref(),
+            HookPhase::RenderInitAfter => hooks.render_init_after.as_ref(),
+            HookPhase::RenderBefore => hooks.render_before.as_ref(),
+            HookPhase::RenderAfter => hooks.render_after.as_ref(),
         }
     }
 
@@ -109,6 +121,10 @@ mod tests {
     fn test_hook_phase_names() {
         assert_eq!(HookPhase::BuildBefore.name(), "build_before");
         assert_eq!(HookPhase::BuildAfter.name(), "build_after");
+        assert_eq!(HookPhase::RenderInitBefore.name(), "render_init_before");
+        assert_eq!(HookPhase::RenderInitAfter.name(), "render_init_after");
+        assert_eq!(HookPhase::RenderBefore.name(), "render_before");
+        assert_eq!(HookPhase::RenderAfter.name(), "render_after");
     }
 
     #[test]
@@ -119,6 +135,10 @@ mod tests {
         // Should not panic or exit
         executor.execute(HookPhase::BuildBefore);
         executor.execute(HookPhase::BuildAfter);
+        executor.execute(HookPhase::RenderInitBefore);
+        executor.execute(HookPhase::RenderInitAfter);
+        executor.execute(HookPhase::RenderBefore);
+        executor.execute(HookPhase::RenderAfter);
     }
 
     #[test]
@@ -126,6 +146,10 @@ mod tests {
         let hooks = Hooks {
             build_before: Some("echo before".to_string()),
             build_after: None,
+            render_init_before: None,
+            render_init_after: None,
+            render_before: None,
+            render_after: None,
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -142,6 +166,10 @@ mod tests {
         let hooks = Hooks {
             build_before: Some("npm run prebuild".to_string()),
             build_after: Some("npm run postbuild".to_string()),
+            render_init_before: Some("echo render init before".to_string()),
+            render_init_after: Some("echo render init after".to_string()),
+            render_before: Some("echo render before".to_string()),
+            render_after: Some("echo render after".to_string()),
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -154,6 +182,22 @@ mod tests {
             executor.get_hook_command(HookPhase::BuildAfter),
             Some(&"npm run postbuild".to_string())
         );
+        assert_eq!(
+            executor.get_hook_command(HookPhase::RenderInitBefore),
+            Some(&"echo render init before".to_string())
+        );
+        assert_eq!(
+            executor.get_hook_command(HookPhase::RenderInitAfter),
+            Some(&"echo render init after".to_string())
+        );
+        assert_eq!(
+            executor.get_hook_command(HookPhase::RenderBefore),
+            Some(&"echo render before".to_string())
+        );
+        assert_eq!(
+            executor.get_hook_command(HookPhase::RenderAfter),
+            Some(&"echo render after".to_string())
+        );
     }
 
     #[test]
@@ -161,6 +205,10 @@ mod tests {
         let hooks = Hooks {
             build_before: None,
             build_after: None,
+            render_init_before: None,
+            render_init_after: None,
+            render_before: None,
+            render_after: None,
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -168,5 +216,9 @@ mod tests {
         // Should not panic or exit
         executor.execute(HookPhase::BuildBefore);
         executor.execute(HookPhase::BuildAfter);
+        executor.execute(HookPhase::RenderInitBefore);
+        executor.execute(HookPhase::RenderInitAfter);
+        executor.execute(HookPhase::RenderBefore);
+        executor.execute(HookPhase::RenderAfter);
     }
 }

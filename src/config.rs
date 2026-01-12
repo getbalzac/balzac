@@ -8,6 +8,14 @@ pub struct Hooks {
     pub build_before: Option<String>,
     #[serde(default)]
     pub build_after: Option<String>,
+    #[serde(default)]
+    pub render_init_before: Option<String>,
+    #[serde(default)]
+    pub render_init_after: Option<String>,
+    #[serde(default)]
+    pub render_before: Option<String>,
+    #[serde(default)]
+    pub render_after: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]

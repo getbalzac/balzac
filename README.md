@@ -28,6 +28,41 @@ Balzac supports different directories that you are free to create or skip:
 - content_directory (optional): directory where content (markdown) will reside
 - global: fill this array if you want to have global data available in all the templates and files
 
+## Hooks
+
+Balzac supports hooks that allow you to run shell commands at various phases of the build process. All hooks are optional and configured in the `[hooks]` section of your `balzac.toml` file.
+
+### Available Hooks
+
+Hooks are executed in the following order during a build:
+
+1. **render_init_before**: Runs before the renderer is initialized
+2. **render_init_after**: Runs after the renderer is initialized
+3. **build_before**: Runs before the dist folder is created
+4. **render_before**: Runs before rendering static pages and collections
+5. **render_after**: Runs after rendering is complete, before assets are copied
+6. **build_after**: Runs after all build steps are complete
+
+### Hook Configuration
+
+Example `balzac.toml` configuration:
+
+```toml
+[hooks]
+render_init_before = "echo 'Preparing renderer'"
+render_init_after = "echo 'Renderer ready'"
+build_before = "pnpm build"
+render_before = "echo 'Starting page generation'"
+render_after = "echo 'Pages generated'"
+build_after = "rsync -av dist/ production/"
+```
+
+### Notes
+
+- Hooks are executed in the project root directory
+- If a hook fails (exits with non-zero status), the entire build process will terminate
+- Hook execution time is logged for each hook
+- All hooks support full shell command syntax with arguments
 
 ## Collections
 
