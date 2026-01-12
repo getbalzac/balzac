@@ -291,7 +291,7 @@ fn test_make_dist_folder_creates_directory() {
 
     let config = Config {
         output_directory: output_dir.to_string_lossy().to_string(),
-        pages_directory: temp_path.join("pages").to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
         layouts_directory: layouts_dir.to_string_lossy().to_string(),
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
