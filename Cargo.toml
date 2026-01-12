@@ -1,6 +1,6 @@
 [package]
 name = "balzac"
-version = "0.1.4"
+version = "0.1.5"
 description = "A blazingly fast static site generator"
 license = "MIT"
 homepage = "https://balzac.rs"
@@ -9,7 +9,8 @@ edition = "2024"
 readme = "README.md"
 exclude = [
     "dist/*",
-    "pages/*"
+    "pages/*",
+    "example/*"
 ]
 
 [dependencies]
