@@ -5,6 +5,56 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[allow(non_camel_case_types)]
+pub struct vite_url {
+    pub manifest: ViteManifest,
+}
+
+impl handlebars::HelperDef for vite_url {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &handlebars::Helper<'rc>,
+        r: &'reg handlebars::Handlebars<'reg>,
+        _: &'rc handlebars::Context,
+        _: &mut handlebars::RenderContext<'reg, 'rc>,
+    ) -> std::result::Result<handlebars::ScopedJson<'rc>, handlebars::RenderError> {
+        let param_idx = 0;
+        let name = h
+            .param(param_idx)
+            .and_then(|x| {
+                if r.strict_mode() && x.is_value_missing() {
+                    None
+                } else {
+                    Some(x.value())
+                }
+            })
+            .ok_or_else(|| {
+                handlebars::RenderErrorReason::ParamNotFoundForName(
+                    stringify!(vite_url),
+                    "name".to_string(),
+                )
+            })
+            .and_then(|x| {
+                handlebars::handlebars_helper!(@as_json_value x,str).ok_or_else(|| {
+                    handlebars::RenderErrorReason::ParamTypeMismatchForName(
+                        stringify!(vite_url),
+                        "name".to_string(),
+                        "str".to_string(),
+                    )
+                })
+            })?;
+        let result = get_file(&self.manifest, name).map_err(|e| {
+            handlebars::RenderError::from(handlebars::RenderErrorReason::HelperNotFound(format!(
+                "vite_url: {}",
+                e
+            )))
+        })?;
+        Ok(handlebars::ScopedJson::Derived(
+            handlebars::JsonValue::from(result),
+        ))
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct ViteChunk {
     pub file: Option<String>,
@@ -19,6 +69,19 @@ pub struct ViteChunk {
 pub struct ViteManifest {
     #[serde(flatten)]
     pub chunks: std::collections::HashMap<String, ViteChunk>,
+}
+
+pub fn get_file(manifest: &ViteManifest, name: &str) -> std::io::Result<String> {
+    if let Some(chunk) = manifest.chunks.get(name)
+        && let Some(file) = &chunk.file
+    {
+        Ok(file.clone())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("file not found: {}", name),
+        ))
+    }
 }
 
 pub fn parse_manifest(path: PathBuf, root: &Path) -> ViteManifest {
