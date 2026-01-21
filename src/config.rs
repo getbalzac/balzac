@@ -1,8 +1,37 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::sitemap::SitemapConfig;
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SitemapConfig {
+    #[serde(default = "default_sitemap_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sitemap_filename")]
+    pub filename: String,
+    #[serde(default)]
+    pub default_priority: Option<f32>,
+    #[serde(default)]
+    pub default_changefreq: Option<String>,
+}
+
+impl Default for SitemapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            filename: default_sitemap_filename(),
+            default_priority: None,
+            default_changefreq: None,
+        }
+    }
+}
+
+fn default_sitemap_enabled() -> bool {
+    true
+}
+
+fn default_sitemap_filename() -> String {
+    "sitemap.xml".to_string()
+}
 
 #[derive(Deserialize, Clone)]
 pub struct Hooks {
