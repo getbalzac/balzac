@@ -1,6 +1,37 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SitemapConfig {
+    #[serde(default = "default_sitemap_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sitemap_filename")]
+    pub filename: String,
+    #[serde(default)]
+    pub default_priority: Option<f32>,
+    #[serde(default)]
+    pub default_changefreq: Option<String>,
+}
+
+impl Default for SitemapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            filename: default_sitemap_filename(),
+            default_priority: None,
+            default_changefreq: None,
+        }
+    }
+}
+
+fn default_sitemap_enabled() -> bool {
+    true
+}
+
+fn default_sitemap_filename() -> String {
+    "sitemap.xml".to_string()
+}
 
 #[derive(Deserialize, Clone)]
 pub struct Hooks {
@@ -52,6 +83,12 @@ pub struct Config {
     pub hooks: Option<Hooks>,
     #[serde(default)]
     pub bundler: Option<Bundler>,
+    /// Base URL for the site (required for sitemap generation)
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Sitemap configuration
+    #[serde(default)]
+    pub sitemap: Option<SitemapConfig>,
 }
 
 impl Config {
@@ -67,6 +104,8 @@ impl Config {
             global: self.global.clone(),
             hooks: self.hooks.clone(),
             bundler: self.bundler.clone(),
+            base_url: self.base_url.clone(),
+            sitemap: self.sitemap.clone(),
         }
     }
 
@@ -87,6 +126,8 @@ pub struct ResolvedConfig {
     pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub hooks: Option<Hooks>,
     pub bundler: Option<Bundler>,
+    pub base_url: Option<String>,
+    pub sitemap: Option<SitemapConfig>,
 }
 
 fn default_vite_manifest_path() -> String {
@@ -133,6 +174,8 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            base_url: None,
+            sitemap: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -149,6 +192,8 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            base_url: None,
+            sitemap: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -169,6 +214,8 @@ mod tests {
             global: Some(global),
             hooks: None,
             bundler: None,
+            base_url: None,
+            sitemap: None,
         };
 
         assert!(config.global.is_some());
@@ -195,11 +242,41 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            base_url: None,
+            sitemap: None,
         };
 
         assert_eq!(config.output_directory, "./build");
         assert_eq!(config.pages_directory, "./src/pages");
         assert_eq!(config.layouts_directory, "./custom/layouts");
         assert_eq!(config.partials_directory, "./custom/partials");
+    }
+
+    #[test]
+    fn test_config_with_sitemap() {
+        let config = Config {
+            output_directory: "./dist".to_string(),
+            pages_directory: "./pages".to_string(),
+            layouts_directory: "./layouts".to_string(),
+            partials_directory: "./partials".to_string(),
+            assets_directory: "./assets".to_string(),
+            content_directory: "./content".to_string(),
+            global: None,
+            hooks: None,
+            bundler: None,
+            base_url: Some("https://example.com".to_string()),
+            sitemap: Some(SitemapConfig {
+                enabled: true,
+                filename: "sitemap.xml".to_string(),
+                default_priority: Some(0.5),
+                default_changefreq: Some("weekly".to_string()),
+            }),
+        };
+
+        assert_eq!(config.base_url, Some("https://example.com".to_string()));
+        assert!(config.sitemap.is_some());
+        let sitemap = config.sitemap.unwrap();
+        assert!(sitemap.enabled);
+        assert_eq!(sitemap.default_priority, Some(0.5));
     }
 }
