@@ -3,8 +3,10 @@ use toml::from_str;
 
 use balzac::hooks::{HookExecutor, HookPhase};
 use balzac::renderer::Renderer;
+use balzac::sitemap::SitePages;
 use balzac::{
-    add_assets, config, make_dist_folder, render_collections, render_static_pages, renderer,
+    add_assets, config, discover_collections, discover_static_pages, make_dist_folder,
+    render_collection_items, render_pages, renderer, write_sitemap,
 };
 
 fn main() {
@@ -58,35 +60,85 @@ fn main() {
 
     hook_executor.execute(HookPhase::RenderInitAfter);
     hook_executor.execute(HookPhase::BuildBefore);
+
     let start = std::time::Instant::now();
-    if let Err(e) = make_dist_folder(&resolved_config) {
-        log::error!("Error creating output directory: {}", e);
-        std::process::exit(1);
+    match make_dist_folder(&resolved_config) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error creating output directory: {}", e);
+            std::process::exit(1);
+        }
     }
     log::info!("Created output directory (took {:?})", start.elapsed());
+
+    let start = std::time::Instant::now();
+    let static_pages = match discover_static_pages(&resolved_config) {
+        Ok(pages) => pages,
+        Err(e) => {
+            log::error!("Error discovering static pages: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let collection_pages = match discover_collections(&resolved_config) {
+        Ok(pages) => pages,
+        Err(e) => {
+            log::error!("Error discovering collections: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut site_pages = SitePages::new();
+    site_pages.add_pages(static_pages);
+    site_pages.add_pages(collection_pages);
+    log::info!(
+        "Discovered {} pages (took {:?})",
+        site_pages.all().len(),
+        start.elapsed()
+    );
 
     hook_executor.execute(HookPhase::RenderBefore);
 
     let start = std::time::Instant::now();
-    if let Err(e) = render_static_pages(&resolved_config, &render) {
-        log::error!("Error rendering static pages: {}", e);
-        std::process::exit(1);
+    match render_pages(&resolved_config, site_pages.all(), &render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering static pages: {}", e);
+            std::process::exit(1);
+        }
     }
     log::info!("Rendered static pages (took {:?})", start.elapsed());
 
     let start = std::time::Instant::now();
-    if let Err(e) = render_collections(&resolved_config, &render) {
-        log::error!("Error rendering collections: {}", e);
-        std::process::exit(1);
+    match render_collection_items(&resolved_config, site_pages.all(), &render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering collections: {}", e);
+            std::process::exit(1);
+        }
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::RenderAfter);
 
     let start = std::time::Instant::now();
-    if let Err(e) = add_assets(&resolved_config) {
-        log::error!("Error handling assets: {}", e);
-        std::process::exit(1);
+    match write_sitemap(&resolved_config, &site_pages) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error writing sitemap: {}", e);
+            std::process::exit(1);
+        }
+    }
+    if resolved_config.base_url.is_some() {
+        log::info!("Generated sitemap (took {:?})", start.elapsed());
+    }
+
+    let start = std::time::Instant::now();
+    match add_assets(&resolved_config) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error handling assets: {}", e);
+            std::process::exit(1);
+        }
     }
     log::info!("Handled assets (took {:?})", start.elapsed());
 
