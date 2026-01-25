@@ -1,6 +1,6 @@
 [package]
 name = "balzac"
-version = "0.1.7"
+version = "0.1.8"
 description = "A blazingly fast static site generator"
 license = "MIT"
 homepage = "https://balzac.rs"
