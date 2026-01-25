@@ -27,3 +27,8 @@ toml = "0.9.10"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
