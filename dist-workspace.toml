@@ -18,4 +18,4 @@ install-updater = false
 # A GitHub repo to push Homebrew formulas to
 tap = "getbalzac/homebrew-tap"
 # Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+publish-jobs = ["homebrew", "npm"]
