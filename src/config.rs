@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -6,11 +9,14 @@ use serde::{Deserialize, Serialize};
 pub struct SitemapConfig {
     #[serde(default = "default_sitemap_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_sitemap_filename")]
+    #[serde(
+        default = "default_sitemap_filename",
+        skip_serializing_if = "is_default_sitemap_filename"
+    )]
     pub filename: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_priority: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_changefreq: Option<String>,
 }
 
@@ -33,23 +39,27 @@ fn default_sitemap_filename() -> String {
     "sitemap.xml".to_string()
 }
 
-#[derive(Deserialize, Clone)]
+fn is_default_sitemap_filename(s: &String) -> bool {
+    s == &default_sitemap_filename()
+}
+
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Hooks {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_before: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_after: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_init_before: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_init_after: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_before: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_after: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct ViteBundler {
     #[serde(default)]
     pub enabled: bool,
@@ -57,38 +67,72 @@ pub struct ViteBundler {
     pub manifest_path: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Bundler {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vite: Option<ViteBundler>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Config {
-    #[serde(default = "default_output_directory")]
+    #[serde(
+        default = "default_output_directory",
+        skip_serializing_if = "is_default_output_directory"
+    )]
     pub output_directory: String,
-    #[serde(default = "default_pages_directory")]
+    #[serde(
+        default = "default_pages_directory",
+        skip_serializing_if = "is_default_pages_directory"
+    )]
     pub pages_directory: String,
-    #[serde(default = "default_layouts_directory")]
+    #[serde(
+        default = "default_layouts_directory",
+        skip_serializing_if = "is_default_layouts_directory"
+    )]
     pub layouts_directory: String,
-    #[serde(default = "default_partials_directory")]
+    #[serde(
+        default = "default_partials_directory",
+        skip_serializing_if = "is_default_partials_directory"
+    )]
     pub partials_directory: String,
-    #[serde(default = "default_assets_directory")]
+    #[serde(
+        default = "default_assets_directory",
+        skip_serializing_if = "is_default_assets_directory"
+    )]
     pub assets_directory: String,
-    #[serde(default = "default_content_directory")]
+    #[serde(
+        default = "default_content_directory",
+        skip_serializing_if = "is_default_content_directory"
+    )]
     pub content_directory: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundler: Option<Bundler>,
-    /// Base URL for the site (required for sitemap generation)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    /// Sitemap configuration
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sitemap: Option<SitemapConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            output_directory: default_output_directory(),
+            pages_directory: default_pages_directory(),
+            layouts_directory: default_layouts_directory(),
+            partials_directory: default_partials_directory(),
+            assets_directory: default_assets_directory(),
+            content_directory: default_content_directory(),
+            global: None,
+            hooks: None,
+            bundler: None,
+            base_url: None,
+            sitemap: None,
+        }
+    }
 }
 
 impl Config {
@@ -132,6 +176,98 @@ pub struct ResolvedConfig {
 
 fn default_vite_manifest_path() -> String {
     "dist/.vite/manifest.json".to_string()
+}
+
+fn is_default_output_directory(s: &String) -> bool {
+    s == &default_output_directory()
+}
+
+fn is_default_pages_directory(s: &String) -> bool {
+    s == &default_pages_directory()
+}
+
+fn is_default_layouts_directory(s: &String) -> bool {
+    s == &default_layouts_directory()
+}
+
+fn is_default_partials_directory(s: &String) -> bool {
+    s == &default_partials_directory()
+}
+
+fn is_default_assets_directory(s: &String) -> bool {
+    s == &default_assets_directory()
+}
+
+fn is_default_content_directory(s: &String) -> bool {
+    s == &default_content_directory()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitFeature {
+    Sitemap,
+}
+
+#[derive(Debug)]
+pub enum CreateConfigError {
+    AlreadyExists,
+    Io(io::Error),
+    Serialize(toml::ser::Error),
+}
+
+impl std::fmt::Display for CreateConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateConfigError::AlreadyExists => write!(f, "balzac.toml already exists"),
+            CreateConfigError::Io(e) => write!(f, "IO error: {}", e),
+            CreateConfigError::Serialize(e) => write!(f, "Serialization error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for CreateConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CreateConfigError::Io(e) => Some(e),
+            CreateConfigError::Serialize(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for CreateConfigError {
+    fn from(err: io::Error) -> Self {
+        CreateConfigError::Io(err)
+    }
+}
+
+impl From<toml::ser::Error> for CreateConfigError {
+    fn from(err: toml::ser::Error) -> Self {
+        CreateConfigError::Serialize(err)
+    }
+}
+
+impl Config {
+    pub fn create(path: &Path, features: Option<&[InitFeature]>) -> Result<(), CreateConfigError> {
+        let config_path = path.join("balzac.toml");
+
+        if config_path.exists() {
+            return Err(CreateConfigError::AlreadyExists);
+        }
+
+        let features = features.unwrap_or(&[]);
+
+        let mut config = Config::default();
+
+        if features.contains(&InitFeature::Sitemap) {
+            config.base_url = Some("https://example.com".to_string());
+            config.sitemap = Some(SitemapConfig::default());
+        }
+
+        let config_content = toml::to_string_pretty(&config)?;
+        fs::write(&config_path, config_content)?;
+
+        Ok(())
+    }
 }
 
 fn default_output_directory() -> String {
@@ -278,5 +414,88 @@ mod tests {
         let sitemap = config.sitemap.unwrap();
         assert!(sitemap.enabled);
         assert_eq!(sitemap.default_priority, Some(0.5));
+    }
+
+    #[test]
+    fn test_config_create_without_features() {
+        let temp_dir = std::env::temp_dir().join("balzac_test_create_no_features");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let result = Config::create(&temp_dir, None);
+        assert!(result.is_ok());
+
+        let config_content = fs::read_to_string(temp_dir.join("balzac.toml")).unwrap();
+        let parsed: Config = toml::from_str(&config_content).unwrap();
+
+        assert_eq!(parsed.output_directory, "./dist");
+        assert!(parsed.sitemap.is_none());
+        assert!(parsed.base_url.is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_config_create_with_sitemap_feature() {
+        let temp_dir = std::env::temp_dir().join("balzac_test_create_sitemap");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let result = Config::create(&temp_dir, Some(&[InitFeature::Sitemap]));
+        assert!(result.is_ok());
+
+        let config_content = fs::read_to_string(temp_dir.join("balzac.toml")).unwrap();
+        let parsed: Config = toml::from_str(&config_content).unwrap();
+
+        assert_eq!(parsed.base_url, Some("https://example.com".to_string()));
+        assert!(parsed.sitemap.is_some());
+        let sitemap = parsed.sitemap.unwrap();
+        assert!(sitemap.enabled);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_config_create_already_exists() {
+        let temp_dir = std::env::temp_dir().join("balzac_test_create_exists");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        fs::write(temp_dir.join("balzac.toml"), "existing config").unwrap();
+
+        let result = Config::create(&temp_dir, None);
+        assert!(matches!(result, Err(CreateConfigError::AlreadyExists)));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        let config = Config {
+            output_directory: "./build".to_string(),
+            pages_directory: "./src/pages".to_string(),
+            base_url: Some("https://example.com".to_string()),
+            sitemap: Some(SitemapConfig {
+                enabled: true,
+                filename: "sitemap.xml".to_string(),
+                default_priority: Some(0.8),
+                default_changefreq: None,
+            }),
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.output_directory, "./build");
+        assert_eq!(deserialized.pages_directory, "./src/pages");
+        assert_eq!(
+            deserialized.base_url,
+            Some("https://example.com".to_string())
+        );
+        assert!(deserialized.sitemap.is_some());
+        let sitemap = deserialized.sitemap.unwrap();
+        assert!(sitemap.enabled);
+        assert_eq!(sitemap.default_priority, Some(0.8));
     }
 }
