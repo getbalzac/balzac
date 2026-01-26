@@ -59,7 +59,7 @@ fn find_closing_delimiter(content: &str) -> Option<usize> {
             // Actually we need to check what comes after the \n
             let check_pos = after_newline;
 
-            if content[check_pos..].starts_with("---") {
+            if check_pos < content.len() && content[check_pos..].starts_with("---") {
                 let after_dashes = check_pos + 3;
                 // Verify --- is followed by newline or end of content
                 if after_dashes >= content.len()
