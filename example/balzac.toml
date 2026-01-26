@@ -1,5 +1,5 @@
 [hooks]
-render_before = "pnpm build"
+render_init_before = "pnpm build"
 
 [bundler.vite]
 enabled = true

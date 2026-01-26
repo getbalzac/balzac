@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-
-use gray_matter::{Matter, ParsedEntity, Pod, engine::YAML};
-use serde_json::{self, Value, json};
+use comrak::{Options, markdown_to_html};
+use serde_json::{Value, json};
 
 pub struct MarkdownOutput {
     pub content: String,
@@ -9,48 +7,58 @@ pub struct MarkdownOutput {
 }
 
 pub fn parse_markdown(file_content: &str) -> std::io::Result<MarkdownOutput> {
-    let matter = Matter::<YAML>::new();
-    let parsed: ParsedEntity = matter.parse(file_content).map_err(|e| {
+    let (frontmatter_yaml, markdown_content) = extract_frontmatter(file_content);
+
+    let fm = match frontmatter_yaml {
+        Some(yaml) => parse_yaml_to_json(yaml)?,
+        None => json!(null),
+    };
+
+    let options = build_comrak_options();
+    let html = markdown_to_html(markdown_content, &options);
+
+    Ok(MarkdownOutput { content: html, fm })
+}
+
+fn extract_frontmatter(content: &str) -> (Option<&str>, &str) {
+    let content = content.trim_start();
+
+    if !content.starts_with("---") {
+        return (None, content);
+    }
+
+    let after_opening = &content[3..];
+    let after_opening = after_opening.trim_start_matches(['\r', '\n']);
+
+    if let Some(end_pos) = after_opening.find("\n---") {
+        let frontmatter = &after_opening[..end_pos];
+        let rest = &after_opening[end_pos + 1..];
+        let rest = rest.trim_start_matches('-');
+        let rest = rest.trim_start_matches(['\r', '\n']);
+
+        return (Some(frontmatter.trim()), rest);
+    }
+
+    (None, content)
+}
+
+fn parse_yaml_to_json(yaml: &str) -> std::io::Result<Value> {
+    serde_yaml::from_str(yaml).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Could not get frontmatter: {}", e),
+            format!("Could not parse frontmatter YAML: {}", e),
         )
-    })?;
-    let parsed_md = markdown::to_html_with_options(&parsed.content, &markdown::Options::gfm())
-        .map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Could not parse markdown file: {}", e),
-            )
-        })?;
-    let fm = get_frontmatter(&parsed);
-    Ok(MarkdownOutput {
-        content: parsed_md,
-        fm,
     })
 }
 
-fn pod_to_json(pod: &Pod) -> Value {
-    match pod {
-        Pod::Null => json!(null),
-        Pod::String(s) => json!(s),
-        Pod::Integer(i) => json!(i),
-        Pod::Float(f) => json!(f),
-        Pod::Boolean(b) => json!(b),
-        Pod::Array(arr) => {
-            let json_array: Vec<Value> = arr.iter().map(pod_to_json).collect();
-            json!(json_array)
-        }
-        Pod::Hash(map) => {
-            let json_map: HashMap<String, Value> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), pod_to_json(v)))
-                .collect();
-            json!(json_map)
-        }
-    }
-}
+fn build_comrak_options() -> Options<'static> {
+    let mut options = Options::default();
 
-fn get_frontmatter(parsed: &ParsedEntity<Pod>) -> serde_json::Value {
-    parsed.data.as_ref().map(pod_to_json).unwrap_or(json!(null))
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.render.unsafe_ = true;
+
+    options
 }
