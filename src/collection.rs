@@ -131,12 +131,13 @@ mod tests {
     }
 
     #[test]
-    fn test_frontmatter_with_dashes_in_multiline_yaml() {
-        // --- on its own line within a multiline YAML string (preceded by non-newline)
-        let input = "---\ntitle: Test\ncode: |\n  some code\n  ---not-a-delimiter\n  more code\n---\n\nContent";
+    fn test_frontmatter_with_indented_dashes_in_multiline_yaml() {
+        // Indented --- (with leading spaces) should not match as closing delimiter
+        let input =
+            "---\ntitle: Test\ncode: |\n  some code\n  ---indented\n  more code\n---\n\nContent";
         let (fm, content) = extract_frontmatter(input);
         assert!(fm.is_some());
-        assert!(fm.unwrap().contains("---not-a-delimiter"));
+        assert!(fm.unwrap().contains("---indented"));
         assert_eq!(content, "Content");
     }
 
