@@ -7,7 +7,7 @@ use std::{
 
 #[allow(non_camel_case_types)]
 pub struct vite_url {
-    pub manifest: ViteManifest,
+    pub asset_source: ViteAssetSource,
 }
 
 impl handlebars::HelperDef for vite_url {
@@ -43,16 +43,17 @@ impl handlebars::HelperDef for vite_url {
                     )
                 })
             })?;
-        let result = get_file(&self.manifest, name).map_err(|e| {
-            handlebars::RenderError::from(handlebars::RenderErrorReason::Other(format!(
-                "Asset not found in vite manifest: {}",
-                e
-            )))
-        })?;
+        let result = resolve_asset_url(&self.asset_source, name)
+            .map_err(|e| handlebars::RenderError::from(handlebars::RenderErrorReason::Other(e)))?;
         Ok(handlebars::ScopedJson::Derived(
             handlebars::JsonValue::from(result),
         ))
     }
+}
+
+pub enum ViteAssetSource {
+    Manifest(ViteManifest),
+    DevOrigin(String),
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -86,6 +87,19 @@ pub fn get_file(manifest: &ViteManifest, name: &str) -> std::io::Result<String> 
     }
 }
 
+pub fn resolve_asset_url(asset_source: &ViteAssetSource, name: &str) -> Result<String, String> {
+    match asset_source {
+        ViteAssetSource::Manifest(manifest) => {
+            get_file(manifest, name).map_err(|e| format!("Asset not found in vite manifest: {}", e))
+        }
+        ViteAssetSource::DevOrigin(origin) => Ok(format!(
+            "{}/{}",
+            origin.trim_end_matches('/'),
+            name.trim_start_matches('/')
+        )),
+    }
+}
+
 pub fn parse_manifest(path: PathBuf, root: &Path) -> Result<ViteManifest, String> {
     let absolute_path = if path.is_absolute() {
         path
@@ -107,4 +121,35 @@ pub fn parse_manifest(path: PathBuf, root: &Path) -> Result<ViteManifest, String
     log::debug!("Parsed vite manifest: {:?}", parsed_config);
 
     Ok(parsed_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_asset_url_from_manifest() {
+        let manifest = ViteManifest {
+            chunks: std::collections::HashMap::from([(
+                "main.js".to_string(),
+                ViteChunk {
+                    file: Some("assets/main-123.js".to_string()),
+                    ..Default::default()
+                },
+            )]),
+        };
+
+        let result = resolve_asset_url(&ViteAssetSource::Manifest(manifest), "main.js").unwrap();
+        assert_eq!(result, "assets/main-123.js");
+    }
+
+    #[test]
+    fn test_resolve_asset_url_from_dev_origin() {
+        let result = resolve_asset_url(
+            &ViteAssetSource::DevOrigin("http://127.0.0.1:5173".to_string()),
+            "main.js",
+        )
+        .unwrap();
+        assert_eq!(result, "http://127.0.0.1:5173/main.js");
+    }
 }

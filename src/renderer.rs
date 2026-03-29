@@ -4,7 +4,7 @@ use handlebars::Handlebars;
 
 use crate::{
     config,
-    vite::{parse_manifest, vite_url},
+    vite::{ViteAssetSource, parse_manifest, vite_url},
 };
 
 pub trait Renderer {
@@ -68,13 +68,18 @@ impl<'a> HandlebarsRenderer<'a> {
             && let Some(vite) = &bundler.vite
             && vite.enabled
         {
-            let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
-            let manifest = parse_manifest(manifest_path, &configuration.root_directory)
-                .unwrap_or_else(|e| {
-                    log::error!("{}", e);
-                    std::process::exit(1);
-                });
-            let helper = vite_url { manifest };
+            let asset_source = if configuration.dev_mode {
+                ViteAssetSource::DevOrigin(vite.dev_origin.clone())
+            } else {
+                let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
+                let manifest = parse_manifest(manifest_path, &configuration.root_directory)
+                    .unwrap_or_else(|e| {
+                        log::error!("{}", e);
+                        std::process::exit(1);
+                    });
+                ViteAssetSource::Manifest(manifest)
+            };
+            let helper = vite_url { asset_source };
             self.registry.register_helper("vite_url", Box::new(helper));
         }
     }

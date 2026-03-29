@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config::{Config, CreateConfigError, InitFeature};
+use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
@@ -162,4 +163,11 @@ pub fn build(path: &Path) {
     log::info!("Handled assets (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::BuildAfter);
+}
+
+pub fn dev(path: &Path, host: &str, port: u16) {
+    if let Err(error) = dev::run(path, host, port) {
+        log::error!("Error running dev server: {}", error);
+        std::process::exit(1);
+    }
 }

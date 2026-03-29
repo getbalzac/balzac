@@ -65,6 +65,11 @@ pub struct ViteBundler {
     pub enabled: bool,
     #[serde(default = "default_vite_manifest_path")]
     pub manifest_path: String,
+    #[serde(
+        default = "default_vite_dev_origin",
+        skip_serializing_if = "is_default_vite_dev_origin"
+    )]
+    pub dev_origin: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -150,6 +155,7 @@ impl Config {
             bundler: self.bundler.clone(),
             base_url: self.base_url.clone(),
             sitemap: self.sitemap.clone(),
+            dev_mode: false,
         }
     }
 
@@ -159,6 +165,7 @@ impl Config {
     }
 }
 
+#[derive(Clone)]
 pub struct ResolvedConfig {
     pub root_directory: std::path::PathBuf,
     pub output_directory: std::path::PathBuf,
@@ -172,10 +179,15 @@ pub struct ResolvedConfig {
     pub bundler: Option<Bundler>,
     pub base_url: Option<String>,
     pub sitemap: Option<SitemapConfig>,
+    pub dev_mode: bool,
 }
 
 fn default_vite_manifest_path() -> String {
     "dist/.vite/manifest.json".to_string()
+}
+
+fn default_vite_dev_origin() -> String {
+    "http://127.0.0.1:5173".to_string()
 }
 
 fn is_default_output_directory(s: &String) -> bool {
@@ -200,6 +212,10 @@ fn is_default_assets_directory(s: &String) -> bool {
 
 fn is_default_content_directory(s: &String) -> bool {
     s == &default_content_directory()
+}
+
+fn is_default_vite_dev_origin(s: &String) -> bool {
+    s == &default_vite_dev_origin()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
