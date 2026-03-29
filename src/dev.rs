@@ -661,7 +661,7 @@ fn inject_dev_scripts(html: &str, config: &ResolvedConfig) -> String {
         SSE_ENDPOINT
     ));
 
-    if let Some(index) = html.rfind("</body>") {
+    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
         let mut injected = String::with_capacity(html.len() + scripts.len());
         injected.push_str(&html[..index]);
         injected.push_str(&scripts);
@@ -874,6 +874,14 @@ mod tests {
         let injected = inject_dev_scripts("<html><body><h1>Hi</h1></body></html>", &config);
         assert!(injected.contains(SSE_ENDPOINT));
         assert!(injected.contains("EventSource"));
+    }
+
+    #[test]
+    fn test_inject_dev_scripts_handles_mixed_case_body_tag() {
+        let (_temp_dir, config) = setup_dev_project();
+        let injected = inject_dev_scripts("<html><Body><h1>Hi</h1></BoDy></html>", &config);
+        assert!(injected.contains("</BoDy>"));
+        assert!(injected.find("EventSource").unwrap() < injected.find("</BoDy>").unwrap());
     }
 
     #[test]
