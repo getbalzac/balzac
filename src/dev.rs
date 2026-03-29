@@ -42,7 +42,13 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
 
     loop {
         thread::sleep(WATCH_INTERVAL);
-        let latest_snapshot = capture_snapshot(&session.resolved_config)?;
+        let latest_snapshot = match capture_snapshot(&session.resolved_config) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log::warn!("Error refreshing watched files, retrying: {}", error);
+                continue;
+            }
+        };
         let changes = diff_snapshots(&snapshot, &latest_snapshot);
         if changes.is_empty() {
             continue;
@@ -50,14 +56,36 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
 
         thread::sleep(WATCH_DEBOUNCE);
 
-        let debounced_snapshot = capture_snapshot(&session.resolved_config)?;
+        let debounced_snapshot = match capture_snapshot(&session.resolved_config) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log::warn!(
+                    "Error refreshing watched files after debounce, retrying: {}",
+                    error
+                );
+                continue;
+            }
+        };
         let debounced_changes = diff_snapshots(&snapshot, &debounced_snapshot);
         if debounced_changes.is_empty() {
             snapshot = debounced_snapshot;
             continue;
         }
 
-        let reload_messages = session.process_changes(&debounced_changes)?;
+        let reload_messages = match session.process_changes(&debounced_changes) {
+            Ok(messages) => messages,
+            Err(error) => {
+                log::warn!("Error processing file change, skipping reload: {}", error);
+                if let Ok(updated_snapshot) = capture_snapshot(&session.resolved_config) {
+                    snapshot = updated_snapshot;
+                } else {
+                    log::warn!(
+                        "Error refreshing watched files after failed reload, keeping previous snapshot"
+                    );
+                }
+                continue;
+            }
+        };
         {
             let mut config = shared_config
                 .write()
@@ -67,7 +95,12 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
         for message in reload_messages {
             events.broadcast(message);
         }
-        snapshot = capture_snapshot(&session.resolved_config)?;
+        match capture_snapshot(&session.resolved_config) {
+            Ok(updated_snapshot) => snapshot = updated_snapshot,
+            Err(error) => {
+                log::warn!("Error refreshing watched files after reload: {}", error);
+            }
+        }
     }
 }
 
