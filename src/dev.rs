@@ -484,6 +484,7 @@ fn handle_connection(
             "405 Method Not Allowed",
             "text/plain; charset=utf-8",
             b"Method Not Allowed",
+            false,
         );
     }
 
@@ -500,6 +501,7 @@ fn handle_connection(
             "404 Not Found",
             "text/plain; charset=utf-8",
             b"Not Found",
+            false,
         );
     };
 
@@ -510,7 +512,13 @@ fn handle_connection(
         body = inject_dev_scripts(&html, &config_guard).into_bytes();
     }
 
-    write_response(stream, "200 OK", content_type, &body)
+    write_response(
+        stream,
+        "200 OK",
+        content_type,
+        &body,
+        should_include_response_body(&method),
+    )
 }
 
 fn read_request(stream: &TcpStream) -> std::io::Result<(String, String)> {
@@ -569,6 +577,7 @@ fn write_response(
     status: &str,
     content_type: &str,
     body: &[u8],
+    include_body: bool,
 ) -> std::io::Result<()> {
     let headers = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -577,8 +586,14 @@ fn write_response(
         body.len()
     );
     stream.write_all(headers.as_bytes())?;
-    stream.write_all(body)?;
+    if include_body {
+        stream.write_all(body)?;
+    }
     stream.flush()
+}
+
+fn should_include_response_body(method: &str) -> bool {
+    method != "HEAD"
 }
 
 fn resolve_output_path(output_root: &Path, request_path: &str) -> Option<PathBuf> {
@@ -907,6 +922,12 @@ mod tests {
 
         let path = resolve_output_path(&config.output_directory, "/about").unwrap();
         assert_eq!(path, config.output_directory.join("about.html"));
+    }
+
+    #[test]
+    fn test_should_include_response_body_for_head_requests() {
+        assert!(!should_include_response_body("HEAD"));
+        assert!(should_include_response_body("GET"));
     }
 
     #[test]
