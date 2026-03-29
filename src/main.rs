@@ -31,6 +31,25 @@ fn main() {
                         .help("Include sitemap configuration")
                         .action(clap::ArgAction::SetTrue),
                 ),
+        )
+        .subcommand(
+            clap::command!("dev")
+                .about("Serve project locally with targeted page reloads")
+                .arg(
+                    clap::arg!(--root <PATH>)
+                        .value_parser(clap::value_parser!(PathBuf))
+                        .required(false),
+                )
+                .arg(
+                    clap::arg!(--host <HOST>)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .default_value("127.0.0.1"),
+                )
+                .arg(
+                    clap::arg!(--port <PORT>)
+                        .value_parser(clap::value_parser!(u16))
+                        .default_value("4000"),
+                ),
         );
 
     let matches = cmd.get_matches();
@@ -47,6 +66,17 @@ fn main() {
         Some(("build", sub_matches)) => {
             let path = get_path_arg(sub_matches, "root");
             cli::build(&path);
+        }
+        Some(("dev", sub_matches)) => {
+            let path = get_path_arg(sub_matches, "root");
+            let host = sub_matches
+                .get_one::<String>("host")
+                .expect("host should always have a default")
+                .clone();
+            let port = *sub_matches
+                .get_one::<u16>("port")
+                .expect("port should always have a default");
+            cli::dev(&path, &host, port);
         }
         _ => unreachable!(),
     }

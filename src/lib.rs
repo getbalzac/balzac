@@ -2,12 +2,16 @@ pub mod cli;
 pub mod collection;
 pub mod config;
 pub mod context;
+pub mod dev;
 pub mod hooks;
 pub mod renderer;
 pub mod sitemap;
 pub mod vite;
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     context::merge_contexts,
@@ -107,37 +111,17 @@ pub fn discover_static_pages(
             continue;
         }
 
-        let file_stem = entry_path
-            .file_stem()
-            .expect("Could not get file stem")
-            .to_string_lossy()
-            .to_string();
-
-        let url_path = if file_stem == "index" {
-            "/".to_string()
-        } else {
-            format!("/{}", file_stem)
+        let Some(page) = static_page_entry_from_source(parsed_config, &entry_path) else {
+            continue;
         };
-
-        let output_path = parsed_config
-            .output_directory
-            .join(PathBuf::from(&file_stem).with_extension("html"));
 
         log::debug!(
             "Discovered static page: {} -> {}",
-            url_path,
-            output_path.display()
+            page.url_path,
+            page.output_path.display()
         );
 
-        pages.push(PageEntry {
-            url_path,
-            source_path: entry_path,
-            output_path,
-            page_type: PageType::Static,
-            sitemap_meta: SitemapMeta::default(),
-            frontmatter: None,
-            content: None,
-        });
+        pages.push(page);
     }
 
     Ok(pages)
@@ -197,42 +181,18 @@ pub fn discover_collections(
                 continue;
             }
 
-            let file_stem = content_file_path
-                .file_stem()
-                .expect("Could not get collection entry file stem")
-                .to_string_lossy()
-                .to_string();
-
-            let file_content = fs::read_to_string(&content_file_path)?;
-            let parsed_content = collection::parse_markdown(&file_content)?;
-
-            let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
-
-            let url_path = format!("/{}/{}", collection_name, file_stem);
-
-            let output_path = parsed_config
-                .output_directory
-                .join(&collection_name)
-                .join(&file_stem)
-                .with_extension("html");
+            let Some(page) = collection_entry_from_source(parsed_config, &content_file_path)?
+            else {
+                continue;
+            };
 
             log::debug!(
                 "Discovered collection item: {} -> {}",
-                url_path,
-                output_path.display()
+                page.url_path,
+                page.output_path.display()
             );
 
-            pages.push(PageEntry {
-                url_path,
-                source_path: content_file_path,
-                output_path,
-                page_type: PageType::Collection {
-                    name: collection_name.clone(),
-                },
-                sitemap_meta,
-                frontmatter: Some(parsed_content.fm),
-                content: Some(parsed_content.content),
-            });
+            pages.push(page);
         }
     }
 
@@ -249,17 +209,7 @@ pub fn render_pages(
             continue;
         }
 
-        log::info!(
-            "Rendering page {}",
-            page.source_path
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        );
-
-        let content = fs::read_to_string(&page.source_path)?;
-        let rendered = render.render(content, serde_json::json!(&parsed_config.global));
-        fs::write(&page.output_path, rendered)?;
+        render_static_page(parsed_config, page, render)?;
     }
 
     Ok(())
@@ -287,29 +237,7 @@ pub fn render_collection_items(
             log::info!("Rendering collection {}", collection_name);
         }
 
-        let details_page_path = parsed_config
-            .pages_directory
-            .join(collection_name)
-            .join("details.hbs");
-
-        let content = page
-            .content
-            .as_ref()
-            .expect("Collection item should have parsed content");
-        let frontmatter = page
-            .frontmatter
-            .as_ref()
-            .expect("Collection item should have frontmatter");
-
-        let rendered_result = render.render(
-            fs::read_to_string(&details_page_path)?,
-            merge_contexts(
-                parsed_config,
-                serde_json::json!({"content": content, "fm": frontmatter}),
-            ),
-        );
-
-        fs::write(&page.output_path, &rendered_result)?;
+        render_collection_page(parsed_config, page, render)?;
     }
 
     Ok(())
@@ -343,4 +271,217 @@ pub fn write_sitemap(
     fs::write(&sitemap_path, xml)?;
 
     Ok(())
+}
+
+pub fn is_supported_page_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("hbs") | Some("handlebars") | Some("html")
+    )
+}
+
+pub fn static_page_entry_from_source(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> Option<PageEntry> {
+    let relative_path = source_path
+        .strip_prefix(&parsed_config.pages_directory)
+        .ok()?;
+    if relative_path.components().count() != 1 || !is_supported_page_file(source_path) {
+        return None;
+    }
+
+    let file_stem = source_path.file_stem()?.to_string_lossy().to_string();
+    let url_path = if file_stem == "index" {
+        "/".to_string()
+    } else {
+        format!("/{}", file_stem)
+    };
+    let output_path = parsed_config
+        .output_directory
+        .join(PathBuf::from(&file_stem).with_extension("html"));
+
+    Some(PageEntry {
+        url_path,
+        source_path: source_path.to_path_buf(),
+        output_path,
+        page_type: PageType::Static,
+        sitemap_meta: SitemapMeta::default(),
+        frontmatter: None,
+        content: None,
+    })
+}
+
+pub fn collection_entry_from_source(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> std::io::Result<Option<PageEntry>> {
+    let relative_path = match source_path.strip_prefix(&parsed_config.content_directory) {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    let mut components = relative_path.components();
+    let Some(collection_name) = components
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+    else {
+        return Ok(None);
+    };
+    let Some(file_name) = components.next() else {
+        return Ok(None);
+    };
+    if components.next().is_some()
+        || source_path.extension().and_then(|ext| ext.to_str()) != Some("md")
+    {
+        return Ok(None);
+    }
+
+    let details_page_path = parsed_config
+        .pages_directory
+        .join(&collection_name)
+        .join("details.hbs");
+    if !fs::exists(&details_page_path)? {
+        return Ok(None);
+    }
+
+    let file_stem = Path::new(file_name.as_os_str())
+        .file_stem()
+        .expect("Could not get collection entry file stem")
+        .to_string_lossy()
+        .to_string();
+    let file_content = fs::read_to_string(source_path)?;
+    let parsed_content = collection::parse_markdown(&file_content)?;
+    let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
+    let url_path = format!("/{}/{}", collection_name, file_stem);
+    let output_path = parsed_config
+        .output_directory
+        .join(&collection_name)
+        .join(&file_stem)
+        .with_extension("html");
+
+    Ok(Some(PageEntry {
+        url_path,
+        source_path: source_path.to_path_buf(),
+        output_path,
+        page_type: PageType::Collection {
+            name: collection_name,
+        },
+        sitemap_meta,
+        frontmatter: Some(parsed_content.fm),
+        content: Some(parsed_content.content),
+    }))
+}
+
+pub fn render_static_page(
+    parsed_config: &config::ResolvedConfig,
+    page: &PageEntry,
+    render: &HandlebarsRenderer,
+) -> std::io::Result<()> {
+    log::info!(
+        "Rendering page {}",
+        page.source_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+
+    let content = fs::read_to_string(&page.source_path)?;
+    let rendered = render.render(content, serde_json::json!(&parsed_config.global));
+    fs::write(&page.output_path, rendered)?;
+    Ok(())
+}
+
+pub fn render_collection_page(
+    parsed_config: &config::ResolvedConfig,
+    page: &PageEntry,
+    render: &HandlebarsRenderer,
+) -> std::io::Result<()> {
+    let collection_name = match &page.page_type {
+        PageType::Collection { name } => name,
+        PageType::Static => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "render_collection_page expects a collection entry",
+            ));
+        }
+    };
+
+    let collection_output_dir = parsed_config.output_directory.join(collection_name);
+    if !fs::exists(&collection_output_dir)? {
+        fs::create_dir_all(&collection_output_dir)?;
+    }
+
+    let details_page_path = parsed_config
+        .pages_directory
+        .join(collection_name)
+        .join("details.hbs");
+    let content = page
+        .content
+        .as_ref()
+        .expect("Collection item should have parsed content");
+    let frontmatter = page
+        .frontmatter
+        .as_ref()
+        .expect("Collection item should have frontmatter");
+
+    let rendered_result = render.render(
+        fs::read_to_string(&details_page_path)?,
+        merge_contexts(
+            parsed_config,
+            serde_json::json!({"content": content, "fm": frontmatter}),
+        ),
+    );
+
+    fs::write(&page.output_path, &rendered_result)?;
+    Ok(())
+}
+
+pub fn remove_output_for_source(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> std::io::Result<Option<PathBuf>> {
+    let output_path = if let Some(page) = static_page_entry_from_source(parsed_config, source_path)
+    {
+        Some(page.output_path)
+    } else {
+        collection_output_path_from_source(parsed_config, source_path)
+    };
+
+    let Some(output_path) = output_path else {
+        return Ok(None);
+    };
+
+    if fs::exists(&output_path)? {
+        fs::remove_file(&output_path)?;
+    }
+
+    Ok(Some(output_path))
+}
+
+pub fn collection_output_path_from_source(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> Option<PathBuf> {
+    let relative_path = source_path
+        .strip_prefix(&parsed_config.content_directory)
+        .ok()?;
+    let mut components = relative_path.components();
+    let collection_name = components.next()?.as_os_str().to_string_lossy().to_string();
+    let file_name = components.next()?;
+    if components.next().is_some()
+        || source_path.extension().and_then(|ext| ext.to_str()) != Some("md")
+    {
+        return None;
+    }
+
+    let file_stem = Path::new(file_name.as_os_str())
+        .file_stem()?
+        .to_string_lossy();
+    Some(
+        parsed_config
+            .output_directory
+            .join(collection_name)
+            .join(file_stem.as_ref())
+            .with_extension("html"),
+    )
 }
