@@ -25,7 +25,6 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
     let mut session = DevSession::new(root)?;
-    session.full_rebuild()?;
 
     let shared_config = Arc::new(RwLock::new(session.resolved_config.clone()));
     let events = EventBroker::default();
@@ -117,6 +116,7 @@ impl DevSession {
             resolved_config,
         };
         session.log_ignored_hooks(&parsed_config);
+        session.build_current_config()?;
         Ok(session)
     }
 
@@ -185,7 +185,10 @@ impl DevSession {
         let (parsed_config, resolved_config) = load_config(&self.root)?;
         self.log_ignored_hooks(&parsed_config);
         self.resolved_config = resolved_config;
+        self.build_current_config()
+    }
 
+    fn build_current_config(&self) -> std::io::Result<()> {
         make_dist_folder(&self.resolved_config)?;
         let renderer = self.create_renderer();
         let static_pages = discover_static_pages(&self.resolved_config)?;
