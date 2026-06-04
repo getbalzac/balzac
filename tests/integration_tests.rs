@@ -72,6 +72,7 @@ fn test_partials_registration() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -109,6 +110,7 @@ fn test_partials_registration_without_folder() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -152,6 +154,7 @@ fn test_full_workflow_single_page() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -211,6 +214,7 @@ fn test_full_workflow_multiple_pages() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -280,6 +284,7 @@ fn test_workflow_with_global_data() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: Some(global),
         hooks: None,
         bundler: None,
@@ -328,6 +333,7 @@ fn test_make_dist_folder_creates_directory() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -366,6 +372,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -406,6 +413,7 @@ fn test_workflow_preserves_file_extensions() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -457,6 +465,7 @@ fn test_template_with_conditionals() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: Some(global),
         hooks: None,
         bundler: None,
@@ -505,6 +514,7 @@ fn test_sitemap_generation_with_static_pages() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -601,6 +611,7 @@ fn test_sitemap_generation_with_collections() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -701,6 +712,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -754,6 +766,7 @@ fn test_no_sitemap_without_base_url() {
         partials_directory: partials_dir.to_string_lossy().to_string(),
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
         global: None,
         hooks: None,
         bundler: None,
@@ -778,5 +791,100 @@ fn test_no_sitemap_without_base_url() {
     assert!(
         !output_dir.join("sitemap.xml").exists(),
         "Sitemap should not be created without base_url"
+    );
+}
+
+#[test]
+fn test_custom_tag_renderer_for_links() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        _layouts_dir,
+        _partials_dir,
+        _assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    // Create a tags directory with a custom <a> tag template
+    let tags_dir = temp_path.join("tags");
+    fs::create_dir(&tags_dir).expect("Failed to create tags dir");
+    fs::write(
+        tags_dir.join("a.hbs"),
+        r#"<a href="{{props.href}}" class="custom-link">{{{content}}}</a>"#,
+    )
+    .expect("Failed to write tag template");
+
+    // Create a collection directory structure
+    let blog_pages_dir = pages_dir.join("blog");
+    let blog_content_dir = content_dir.join("blog");
+    fs::create_dir(&blog_pages_dir).expect("Failed to create blog pages dir");
+    fs::create_dir(&content_dir).expect("Failed to create content dir");
+    fs::create_dir(&blog_content_dir).expect("Failed to create blog content dir");
+
+    // Create details template
+    fs::write(
+        blog_pages_dir.join("details.hbs"),
+        "<h1>{{fm.title}}</h1>{{{content}}}",
+    )
+    .expect("Failed to write details template");
+
+    // Create a blog post with a markdown link
+    fs::write(
+        blog_content_dir.join("test-post.md"),
+        "---\ntitle: Test Post\n---\n\nCheck out [this link](https://example.com).",
+    )
+    .expect("Failed to write test post");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: temp_path.join("layouts").to_string_lossy().to_string(),
+        partials_directory: temp_path.join("partials").to_string_lossy().to_string(),
+        assets_directory: temp_path.join("assets").to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: tags_dir.to_string_lossy().to_string(),
+        global: None,
+        hooks: None,
+        bundler: None,
+        base_url: None,
+        sitemap: None,
+    };
+
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let collection_pages =
+        discover_collections(&resolved_config).expect("Failed to discover collections");
+
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer.init(&resolved_config);
+    render_collection_items(&resolved_config, &collection_pages, &renderer)
+        .expect("Failed to render collections");
+
+    // Verify output contains the custom rendered link
+    let output_file = output_dir.join("blog").join("test-post.html");
+    assert!(
+        output_file.exists(),
+        "Output HTML file should exist at {}",
+        output_file.display()
+    );
+
+    let output_content = fs::read_to_string(&output_file).expect("Failed to read output");
+    assert!(
+        output_content.contains(r#"class="custom-link""#),
+        "Custom link class should be present: {}",
+        output_content
+    );
+    assert!(
+        output_content.contains(r#"href="https://example.com""#),
+        "Link href should be preserved: {}",
+        output_content
+    );
+    assert!(
+        output_content.contains(">this link</a>"),
+        "Link text should be preserved: {}",
+        output_content
     );
 }

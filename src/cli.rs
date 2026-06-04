@@ -46,7 +46,7 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         }
     }
 
-    let directories = ["pages", "layouts", "partials", "assets", "content"];
+    let directories = ["pages", "layouts", "partials", "assets", "content", "tags"];
     for dir in &directories {
         let dir_path = path.join(dir);
         if !dir_path.exists() {
