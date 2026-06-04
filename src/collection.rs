@@ -1,4 +1,4 @@
-use comrak::{Options, markdown_to_html};
+use comrak::Options;
 use serde_json::{Value, json};
 
 pub struct MarkdownOutput {
@@ -14,10 +14,10 @@ pub fn parse_markdown(file_content: &str) -> std::io::Result<MarkdownOutput> {
         None => json!(null),
     };
 
-    let options = build_comrak_options();
-    let html = markdown_to_html(markdown_content, &options);
-
-    Ok(MarkdownOutput { content: html, fm })
+    Ok(MarkdownOutput {
+        content: markdown_content.to_string(),
+        fm,
+    })
 }
 
 fn extract_frontmatter(content: &str) -> (Option<&str>, &str) {
@@ -86,7 +86,7 @@ fn parse_yaml_to_json(yaml: &str) -> std::io::Result<Value> {
     })
 }
 
-fn build_comrak_options() -> Options<'static> {
+pub fn build_comrak_options() -> Options<'static> {
     let mut options = Options::default();
 
     options.extension.strikethrough = true;
@@ -155,6 +155,6 @@ mod tests {
         let result = parse_markdown(input).unwrap();
         assert_eq!(result.fm["title"], "Hello World");
         assert_eq!(result.fm["count"], 42);
-        assert!(result.content.contains("<h1>"));
+        assert!(result.content.contains("# Heading"));
     }
 }

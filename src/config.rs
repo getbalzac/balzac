@@ -110,6 +110,11 @@ pub struct Config {
         skip_serializing_if = "is_default_content_directory"
     )]
     pub content_directory: String,
+    #[serde(
+        default = "default_tags_directory",
+        skip_serializing_if = "is_default_tags_directory"
+    )]
+    pub tags_directory: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<HashMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,6 +136,7 @@ impl Default for Config {
             partials_directory: default_partials_directory(),
             assets_directory: default_assets_directory(),
             content_directory: default_content_directory(),
+            tags_directory: default_tags_directory(),
             global: None,
             hooks: None,
             bundler: None,
@@ -150,6 +156,7 @@ impl Config {
             partials_directory: self.resolve_path(&self.partials_directory, root),
             assets_directory: self.resolve_path(&self.assets_directory, root),
             content_directory: self.resolve_path(&self.content_directory, root),
+            tags_directory: self.resolve_path(&self.tags_directory, root),
             global: self.global.clone(),
             hooks: self.hooks.clone(),
             bundler: self.bundler.clone(),
@@ -174,6 +181,7 @@ pub struct ResolvedConfig {
     pub partials_directory: std::path::PathBuf,
     pub assets_directory: std::path::PathBuf,
     pub content_directory: std::path::PathBuf,
+    pub tags_directory: std::path::PathBuf,
     pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub hooks: Option<Hooks>,
     pub bundler: Option<Bundler>,
@@ -212,6 +220,14 @@ fn is_default_assets_directory(s: &String) -> bool {
 
 fn is_default_content_directory(s: &String) -> bool {
     s == &default_content_directory()
+}
+
+fn default_tags_directory() -> String {
+    "./tags".to_string()
+}
+
+fn is_default_tags_directory(s: &String) -> bool {
+    s == &default_tags_directory()
 }
 
 fn is_default_vite_dev_origin(s: &String) -> bool {
@@ -323,6 +339,7 @@ mod tests {
             partials_directory: "./partials".to_string(),
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
+            tags_directory: "./tags".to_string(),
             global: None,
             hooks: None,
             bundler: None,
@@ -341,6 +358,7 @@ mod tests {
             partials_directory: "./partials".to_string(),
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
+            tags_directory: "./tags".to_string(),
             global: None,
             hooks: None,
             bundler: None,
@@ -363,6 +381,7 @@ mod tests {
             partials_directory: "./partials".to_string(),
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
+            tags_directory: "./tags".to_string(),
             global: Some(global),
             hooks: None,
             bundler: None,
@@ -391,6 +410,7 @@ mod tests {
             partials_directory: "./custom/partials".to_string(),
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
+            tags_directory: "./tags".to_string(),
             global: None,
             hooks: None,
             bundler: None,
@@ -413,6 +433,7 @@ mod tests {
             partials_directory: "./partials".to_string(),
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
+            tags_directory: "./tags".to_string(),
             global: None,
             hooks: None,
             bundler: None,

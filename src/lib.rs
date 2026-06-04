@@ -415,7 +415,7 @@ pub fn render_collection_page(
         .pages_directory
         .join(collection_name)
         .join("details.hbs");
-    let content = page
+    let raw_content = page
         .content
         .as_ref()
         .expect("Collection item should have parsed content");
@@ -424,11 +424,15 @@ pub fn render_collection_page(
         .as_ref()
         .expect("Collection item should have frontmatter");
 
+    let html_content = render
+        .render_markdown(raw_content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
     let rendered_result = render.render(
         fs::read_to_string(&details_page_path)?,
         merge_contexts(
             parsed_config,
-            serde_json::json!({"content": content, "fm": frontmatter}),
+            serde_json::json!({"content": html_content, "fm": frontmatter}),
         ),
     );
 

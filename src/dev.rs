@@ -311,6 +311,7 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
     if is_under(&change.path, &config.partials_directory)
         || is_under(&change.path, &config.layouts_directory)
         || is_under(&change.path, &config.assets_directory)
+        || is_under(&change.path, &config.tags_directory)
     {
         return ChangePlan::FullReload;
     }
@@ -708,6 +709,7 @@ fn capture_snapshot(config: &ResolvedConfig) -> std::io::Result<Snapshot> {
         config.layouts_directory.clone(),
         config.assets_directory.clone(),
         config.content_directory.clone(),
+        config.tags_directory.clone(),
     ];
 
     for root in roots {
@@ -794,6 +796,7 @@ mod tests {
         let partials = root.join("partials");
         let assets = root.join("assets");
         let content = root.join("content");
+        let tags = root.join("tags");
         let output = root.join("dist");
 
         fs::create_dir_all(&pages).unwrap();
@@ -801,6 +804,7 @@ mod tests {
         fs::create_dir_all(&partials).unwrap();
         fs::create_dir_all(&assets).unwrap();
         fs::create_dir_all(&content).unwrap();
+        fs::create_dir_all(&tags).unwrap();
         fs::write(root.join("balzac.toml"), "").unwrap();
 
         let mut config = Config::default();
@@ -810,6 +814,7 @@ mod tests {
         config.partials_directory = partials.to_string_lossy().to_string();
         config.assets_directory = assets.to_string_lossy().to_string();
         config.content_directory = content.to_string_lossy().to_string();
+        config.tags_directory = tags.to_string_lossy().to_string();
 
         let mut resolved = config.resolve(&root);
         resolved.dev_mode = true;
@@ -1060,6 +1065,31 @@ partials_directory = "./partials"
         assert_eq!(
             fs::read_to_string(root.join("dist/index.html")).unwrap(),
             "<h1>v2</h1>"
+        );
+    }
+
+    #[test]
+    fn test_classify_tag_template_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.tags_directory.join("a.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_capture_snapshot_includes_tags_directory() {
+        let (_temp_dir, config) = setup_dev_project();
+        let tag_file = config.tags_directory.join("a.hbs");
+        fs::write(&tag_file, "<a>{{{content}}}</a>").unwrap();
+
+        let snapshot = capture_snapshot(&config).unwrap();
+        assert!(
+            snapshot.contains_key(&tag_file),
+            "Snapshot should include tag template file"
         );
     }
 }
