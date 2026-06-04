@@ -209,6 +209,13 @@ impl<'a> HandlebarsRenderer<'a> {
         String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
+    fn html_escape(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+
     fn apply_tag_templates<'b>(
         &self,
         node: &'b AstNode<'b>,
@@ -232,8 +239,8 @@ impl<'a> HandlebarsRenderer<'a> {
             let content = {
                 let data = node.data.borrow();
                 match &data.value {
-                    NodeValue::Code(c) => c.literal.clone(),
-                    NodeValue::CodeBlock(c) => c.literal.clone(),
+                    NodeValue::Code(c) => Self::html_escape(&c.literal),
+                    NodeValue::CodeBlock(c) => Self::html_escape(&c.literal),
                     _ => self.render_children_to_html(node, arena, options)?,
                 }
             };
@@ -485,6 +492,65 @@ mod tests {
         assert!(
             !html.contains("class='break'"),
             "Soft breaks should NOT trigger br template, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_code_literal_html_escaped() {
+        let mut renderer = create_renderer();
+        renderer
+            .tag_templates
+            .insert("code".to_string(), "<code>{{{content}}}</code>".to_string());
+
+        let markdown = "`& < > \"`";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("<code>&amp; &lt; &gt; &quot;</code>"),
+            "Code literal should be HTML-escaped, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_codeblock_literal_html_escaped() {
+        let mut renderer = create_renderer();
+        renderer
+            .tag_templates
+            .insert("pre".to_string(), "<pre>{{{content}}}</pre>".to_string());
+
+        let markdown = "```html\n<script>alert(1)</script>\n```";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "Code block literal should be HTML-escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "Raw script tag should NOT appear, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_code_template_xss_prevention() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "code".to_string(),
+            "<code class='safe'>{{{content}}}</code>".to_string(),
+        );
+
+        let markdown = "`<script>alert('xss')</script>`";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "XSS payload should be escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("<script>alert('xss')</script>"),
+            "Raw script tag should NOT appear, got: {}",
             html
         );
     }
