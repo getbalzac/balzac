@@ -139,7 +139,7 @@ impl<'a> HandlebarsRenderer<'a> {
             NodeValue::Strikethrough => Some("del".to_string()),
             NodeValue::Superscript => Some("sup".to_string()),
             NodeValue::Underline => Some("u".to_string()),
-            NodeValue::LineBreak | NodeValue::SoftBreak => Some("br".to_string()),
+            NodeValue::LineBreak => Some("br".to_string()),
             NodeValue::ThematicBreak => Some("hr".to_string()),
             NodeValue::Code(_) => Some("code".to_string()),
             NodeValue::CodeBlock(_) => Some("pre".to_string()),
@@ -174,6 +174,7 @@ impl<'a> HandlebarsRenderer<'a> {
             }),
             NodeValue::CodeBlock(c) => serde_json::json!({
                 "info": c.info,
+                "literal": c.literal,
                 "fenced": c.fenced,
                 "fence_char": (c.fence_char as char).to_string(),
                 "fence_length": c.fence_length,
@@ -228,7 +229,14 @@ impl<'a> HandlebarsRenderer<'a> {
         if let Some(tag_name) = tag_name
             && let Some(template) = self.tag_templates.get(&tag_name)
         {
-            let content = self.render_children_to_html(node, arena, options)?;
+            let content = {
+                let data = node.data.borrow();
+                match &data.value {
+                    NodeValue::Code(c) => c.literal.clone(),
+                    NodeValue::CodeBlock(c) => c.literal.clone(),
+                    _ => self.render_children_to_html(node, arena, options)?,
+                }
+            };
             let props = self.build_props(node);
 
             let template_data = serde_json::json!({
@@ -428,5 +436,56 @@ mod tests {
         let markdown = "# Hello World";
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(html.contains("<h1 class='title'>Hello World</h1>"));
+    }
+
+    #[test]
+    fn test_render_markdown_with_code_tag_template() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "code".to_string(),
+            "<code class='inline-code'>{{{content}}}</code>".to_string(),
+        );
+
+        let markdown = "Use `hello_world()` function";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("<code class='inline-code'>hello_world()</code>"),
+            "Expected inline code content, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_render_markdown_with_pre_tag_template() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "pre".to_string(),
+            "<pre class='code-block'><code>{{{content}}}</code></pre>".to_string(),
+        );
+
+        let markdown = "```rust\nfn main() {}\n```";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("fn main() {}"),
+            "Expected code block content, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_render_markdown_soft_break_no_br_template() {
+        let mut renderer = create_renderer();
+        renderer
+            .tag_templates
+            .insert("br".to_string(), "<br class='break'>".to_string());
+
+        // Soft breaks occur inside paragraphs with line wrapping
+        let markdown = "Line one\nLine two";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            !html.contains("class='break'"),
+            "Soft breaks should NOT trigger br template, got: {}",
+            html
+        );
     }
 }
