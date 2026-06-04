@@ -170,11 +170,11 @@ impl<'a> HandlebarsRenderer<'a> {
             }),
             NodeValue::Code(c) => serde_json::json!({
                 "num_backticks": c.num_backticks,
-                "literal": c.literal,
+                "literal": Self::html_escape(&c.literal),
             }),
             NodeValue::CodeBlock(c) => serde_json::json!({
                 "info": c.info,
-                "literal": c.literal,
+                "literal": Self::html_escape(&c.literal),
                 "fenced": c.fenced,
                 "fence_char": (c.fence_char as char).to_string(),
                 "fence_length": c.fence_length,
@@ -551,6 +551,50 @@ mod tests {
         assert!(
             !html.contains("<script>alert('xss')</script>"),
             "Raw script tag should NOT appear, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_code_props_literal_is_escaped() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "code".to_string(),
+            "<code class='lang'>{{{props.literal}}}</code>".to_string(),
+        );
+
+        let markdown = "`<script>alert(1)</script>`";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "props.literal should be HTML-escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "Raw script tag should NOT appear in props.literal, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_codeblock_props_literal_is_escaped() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "pre".to_string(),
+            "<pre><code class='lang'>{{{props.literal}}}</code></pre>".to_string(),
+        );
+
+        let markdown = "```html\n<script>alert(1)</script>\n```";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "props.literal should be HTML-escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "Raw script tag should NOT appear in props.literal, got: {}",
             html
         );
     }
