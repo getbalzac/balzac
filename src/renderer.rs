@@ -214,6 +214,8 @@ impl<'a> HandlebarsRenderer<'a> {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
             .replace('"', "&quot;")
+            .replace('\'', "&#x27;")
+            .replace('/', "&#x2F;")
     }
 
     fn apply_tag_templates<'b>(
@@ -503,10 +505,10 @@ mod tests {
             .tag_templates
             .insert("code".to_string(), "<code>{{{content}}}</code>".to_string());
 
-        let markdown = "`& < > \"`";
+        let markdown = "`& < > \"' /`";
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
-            html.contains("<code>&amp; &lt; &gt; &quot;</code>"),
+            html.contains("<code>&amp; &lt; &gt; &quot;&#x27; &#x2F;</code>"),
             "Code literal should be HTML-escaped, got: {}",
             html
         );
@@ -522,7 +524,7 @@ mod tests {
         let markdown = "```html\n<script>alert(1)</script>\n```";
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
-            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            html.contains("&lt;script&gt;alert(1)&lt;&#x2F;script&gt;"),
             "Code block literal should be HTML-escaped, got: {}",
             html
         );
@@ -588,13 +590,57 @@ mod tests {
         let markdown = "```html\n<script>alert(1)</script>\n```";
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
-            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            html.contains("&lt;script&gt;alert(1)&lt;&#x2F;script&gt;"),
             "props.literal should be HTML-escaped, got: {}",
             html
         );
         assert!(
             !html.contains("<script>alert(1)</script>"),
             "Raw script tag should NOT appear in props.literal, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_apostrophe_attribute_breakout_prevention() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "code".to_string(),
+            "<code class='{{{props.literal}}}'>{{{content}}}</code>".to_string(),
+        );
+
+        let markdown = "`don't`";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("class='don&#x27;t'"),
+            "Apostrophe in attribute should be escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("class='don't'"),
+            "Raw apostrophe should NOT break out of attribute, got: {}",
+            html
+        );
+    }
+
+    #[test]
+    fn test_slash_attribute_breakout_prevention() {
+        let mut renderer = create_renderer();
+        renderer.tag_templates.insert(
+            "code".to_string(),
+            "<code class='{{{props.literal}}}'>{{{content}}}</code>".to_string(),
+        );
+
+        let markdown = "`x/y`";
+        let html = renderer.render_markdown(markdown).unwrap();
+        assert!(
+            html.contains("class='x&#x2F;y'"),
+            "Slash in attribute should be escaped, got: {}",
+            html
+        );
+        assert!(
+            !html.contains("class='x/y'"),
+            "Raw slash should NOT appear in attribute, got: {}",
             html
         );
     }
