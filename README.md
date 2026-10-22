@@ -97,6 +97,7 @@ Balzac supports different directories that you are free to create or skip:
 - robots (optional): see [robots.txt](#robotstxt)
 - listings (optional): paginated collection listings, see [Listings and pagination](#listings-and-pagination)
 - taxonomies (optional): tag/category pages, see [Taxonomies](#taxonomies)
+- markdown (optional): markdown rendering options, see [Markdown](#markdown)
 
 ### Vite
 
@@ -297,6 +298,76 @@ A value that can never be a term (missing, `null`, or no letters or digits) rend
 The build fails if two pages would be written to the same file, e.g. a `content/posts/index.md` item and the `/posts/` listing, or a `[listings.posts]` listing and a `[taxonomies.posts]` index.
 
 Listing and taxonomy pages are added to the sitemap.
+
+### Details page context
+
+Besides `fm`, the details template receives:
+
+- `content`: the rendered HTML of the document
+- `excerpt`: the HTML of everything before a `<!-- more -->` marker, or of the first paragraph when there is no marker (`null` if the document has no paragraph)
+- `toc`: the document headings, as a list of `{ level, id, text }`
+- `toc_html`: the same headings rendered as nested `<ul>` lists linking to each heading
+
+```hbs
+<nav>{{{toc_html}}}</nav>
+
+{{#each toc}}
+  <a class="toc-level-{{level}}" href="#{{id}}">{{text}}</a>
+{{/each}}
+```
+
+TOC links point to heading ids, so enable `heading_ids` (see below) or render ids in your own heading tag templates with `props.id`.
+
+## Markdown
+
+Markdown is rendered with [comrak](https://github.com/kivikakk/comrak), with GitHub-flavored extensions (tables, strikethrough, autolinks, task lists). Additional features are configured in the `[markdown]` section of `balzac.toml`; all keys are optional:
+
+```toml
+[markdown]
+syntax_highlighting = true            # default: true
+highlight_theme = "base16-ocean.dark" # default: none, no stylesheet is written
+heading_ids = true                    # default: false
+heading_anchors = true                # default: false
+footnotes = true                      # default: false
+```
+
+### Syntax highlighting
+
+Fenced code blocks with a known language (` ```rust `) are highlighted at build time with [syntect](https://github.com/trishume/syntect). Highlighting uses CSS classes instead of inline styles, so it can be themed from your stylesheets: the `<pre>` gets the `hl-code` class and tokens are wrapped in spans with `hl-` prefixed TextMate scope classes (`hl-keyword`, `hl-string`, `hl-comment`, ...). Code blocks without a language, or with an unknown one, are left unhighlighted.
+
+To get started with a theme, set `highlight_theme` and Balzac writes a matching stylesheet to `<output_directory>/highlight.css`:
+
+```html
+<link rel="stylesheet" href="/highlight.css">
+```
+
+Available themes: `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.dark`, `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`. You can also copy the generated file into your assets and adapt it.
+
+### Heading ids and anchors
+
+With `heading_ids`, headings get an `id` generated from their text, GitHub-style (`## Getting Started` becomes `id="getting-started"`, duplicates get a `-1`, `-2`, ... suffix). `heading_anchors` also enables ids and adds a link to each heading:
+
+```html
+<h2 id="getting-started">Getting Started<a class="heading-anchor" href="#getting-started" aria-hidden="true" tabindex="-1">#</a></h2>
+```
+
+### Footnotes
+
+`footnotes` enables footnote references (`Text[^1]`) and definitions (`[^1]: The note.`), rendered as a `<section class="footnotes">` at the end of the document.
+
+### Tag templates
+
+Handlebars files in the tags directory (`./tags` by default) replace the HTML of markdown elements, e.g. `tags/a.hbs` for links. Templates receive the rendered children as `content` and element data as `props`. Markdown features are exposed there too:
+
+- headings (`h1.hbs` to `h6.hbs`): `props.id` is the heading id (also when `heading_ids` is off; `null` for headings without text, like `## [^1]`) and `props.level` its level
+- code blocks (`pre.hbs`): `props.lang` is the code block language, and `props.highlighted` the highlighted HTML (the escaped code when highlighting is disabled or the language is unknown)
+
+```hbs
+{{!-- tags/pre.hbs --}}
+<figure class="code" data-lang="{{props.lang}}">
+  <pre class="hl-code"><code>{{{props.highlighted}}}</code></pre>
+</figure>
+```
 
 ## Development
 
