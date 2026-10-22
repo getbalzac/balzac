@@ -3,6 +3,16 @@
 <html>
     <body>
         <p>hello world</p>
+        <h2>Posts</h2>
+        <ul>
+            {{#each collections.posts}}
+            <li>
+                <a href="{{url}}">{{fm.title}}</a>
+                {{#if fm.date}}<time datetime="{{fm.date}}">{{fm.date}}</time>{{/if}}
+                <p>{{fm.description}}</p>
+            </li>
+            {{/each}}
+        </ul>
         <script src='{{vite_url "main.js"}}'></script>
     </body>
 </html>

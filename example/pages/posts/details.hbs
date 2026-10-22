@@ -2,3 +2,9 @@
 <div class="post-content">
 {{{content}}}
 </div>
+<h2>All posts</h2>
+<ul>
+    {{#each collections.posts}}
+    <li><a href="{{url}}">{{fm.title}}</a></li>
+    {{/each}}
+</ul>
