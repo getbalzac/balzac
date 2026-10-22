@@ -65,7 +65,7 @@ balzac dev --root ./my-site
 Current behavior:
 
 - direct changes to top-level files in `pages/` trigger a targeted rebuild and reload only for that page
-- direct changes to markdown files in `content/<collection>/` trigger a targeted rebuild and reload only for that collection item
+- direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`) and trigger a full-page reload, without recreating the output directory
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
 - hooks are ignored in dev mode
 
@@ -170,6 +170,27 @@ title: "Test"
 ```
 
 will be available under `fm.title`
+
+### Listing collection items
+
+Every page (static pages and collection `details.hbs` pages) has access to all collections under the `collections` namespace. `collections.<name>` is an array of items with:
+
+- `url`: the item's URL (e.g. `/posts/hello`)
+- `slug`: the markdown file name without extension (e.g. `hello`)
+- `fm`: the item's frontmatter
+- `content`: the item's rendered HTML
+
+Items are sorted by `fm.date` (compared as text, so use ISO dates like `2025-01-31`) from newest to oldest. Items without a date come after dated items, and ties are sorted by slug.
+
+```hbs
+<ul>
+  {{#each collections.posts}}
+    <li><a href="{{url}}">{{fm.title}}</a> {{fm.date}}</li>
+  {{/each}}
+</ul>
+```
+
+Only collections that have a `details.hbs` page are included.
 
 ## Development
 
