@@ -5,6 +5,7 @@ pub mod context;
 pub mod dev;
 pub mod hooks;
 pub mod renderer;
+pub mod robots;
 pub mod sitemap;
 pub mod vite;
 
@@ -18,6 +19,11 @@ use crate::{
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
 };
+
+/// Output file name of the not-found page, which static hosts serve for missing paths.
+pub const NOT_FOUND_PAGE: &str = "404.html";
+/// Name of the robots file, both in the output root and as a user override in the pages directory.
+pub const ROBOTS_FILE: &str = "robots.txt";
 
 pub fn make_dist_folder(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
@@ -269,6 +275,52 @@ pub fn write_sitemap(
     Ok(())
 }
 
+/// Absolute URL of the generated sitemap, if one is generated.
+fn sitemap_url(parsed_config: &config::ResolvedConfig) -> Option<String> {
+    let base_url = parsed_config.base_url.as_ref()?;
+    let sitemap_config = parsed_config.sitemap.clone().unwrap_or_default();
+    sitemap_config.enabled.then(|| {
+        format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            sitemap_config.filename.trim_start_matches('/')
+        )
+    })
+}
+
+/// Write `robots.txt` to the output root. A user-provided `robots.txt` in the
+/// pages directory is copied verbatim and always takes precedence.
+pub fn write_robots(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
+    let robots_path = parsed_config.output_directory.join(ROBOTS_FILE);
+
+    let user_robots = parsed_config.pages_directory.join(ROBOTS_FILE);
+    if fs::exists(&user_robots)? {
+        log::info!(
+            "Copying {} to {}",
+            user_robots.display(),
+            robots_path.display()
+        );
+        fs::copy(&user_robots, &robots_path)?;
+        return Ok(());
+    }
+
+    if fs::exists(parsed_config.assets_directory.join(ROBOTS_FILE))? {
+        log::warn!(
+            "{ROBOTS_FILE} in the assets directory is served under /assets/ and ignored by crawlers; move it to the pages directory to replace the generated one"
+        );
+    }
+
+    let robots_config = parsed_config.robots.clone().unwrap_or_default();
+    if !robots_config.enabled {
+        log::debug!("robots.txt generation is disabled");
+        return Ok(());
+    }
+
+    let content = robots::generate_robots(&robots_config, sitemap_url(parsed_config).as_deref());
+    log::info!("Writing robots.txt to {}", robots_path.display());
+    fs::write(&robots_path, content)
+}
+
 #[must_use]
 pub fn is_supported_page_file(path: &Path) -> bool {
     matches!(
@@ -298,13 +350,18 @@ pub fn static_page_entry_from_source(
     let output_path = parsed_config
         .output_directory
         .join(PathBuf::from(&file_stem).with_extension("html"));
+    let sitemap_meta = SitemapMeta {
+        // the not-found page is not real content
+        exclude: file_stem == "404",
+        ..SitemapMeta::default()
+    };
 
     Some(PageEntry {
         url_path,
         source_path: source_path.to_path_buf(),
         output_path,
         page_type: PageType::Static,
-        sitemap_meta: SitemapMeta::default(),
+        sitemap_meta,
         frontmatter: None,
         content: None,
     })

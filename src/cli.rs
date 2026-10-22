@@ -8,7 +8,7 @@ use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
 use crate::{
     add_assets, discover_collections, discover_static_pages, make_dist_folder,
-    render_collection_items, render_pages, write_sitemap,
+    render_collection_items, render_pages, write_robots, write_sitemap,
 };
 
 pub fn init(path: &Path, features: &[InitFeature]) {
@@ -150,6 +150,11 @@ pub fn build(path: &Path) {
     }
     if resolved_config.base_url.is_some() {
         log::info!("Generated sitemap (took {:?})", start.elapsed());
+    }
+
+    if let Err(e) = write_robots(&resolved_config) {
+        log::error!("Error writing robots.txt: {e}");
+        std::process::exit(1);
     }
 
     let start = std::time::Instant::now();

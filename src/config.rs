@@ -43,6 +43,27 @@ fn is_default_sitemap_filename(s: &String) -> bool {
     s == &default_sitemap_filename()
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RobotsConfig {
+    #[serde(default = "default_robots_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallow: Vec<String>,
+}
+
+impl Default for RobotsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            disallow: Vec::new(),
+        }
+    }
+}
+
+fn default_robots_enabled() -> bool {
+    true
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Hooks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +146,8 @@ pub struct Config {
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sitemap: Option<SitemapConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub robots: Option<RobotsConfig>,
 }
 
 impl Default for Config {
@@ -142,6 +165,7 @@ impl Default for Config {
             bundler: None,
             base_url: None,
             sitemap: None,
+            robots: None,
         }
     }
 }
@@ -163,6 +187,7 @@ impl Config {
             bundler: self.bundler.clone(),
             base_url: self.base_url.clone(),
             sitemap: self.sitemap.clone(),
+            robots: self.robots.clone(),
             dev_mode: false,
         }
     }
@@ -188,6 +213,7 @@ pub struct ResolvedConfig {
     pub bundler: Option<Bundler>,
     pub base_url: Option<String>,
     pub sitemap: Option<SitemapConfig>,
+    pub robots: Option<RobotsConfig>,
     pub dev_mode: bool,
 }
 
@@ -346,6 +372,7 @@ mod tests {
             bundler: None,
             base_url: None,
             sitemap: None,
+            robots: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -365,6 +392,7 @@ mod tests {
             bundler: None,
             base_url: None,
             sitemap: None,
+            robots: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -388,6 +416,7 @@ mod tests {
             bundler: None,
             base_url: None,
             sitemap: None,
+            robots: None,
         };
 
         assert!(config.global.is_some());
@@ -417,6 +446,7 @@ mod tests {
             bundler: None,
             base_url: None,
             sitemap: None,
+            robots: None,
         };
 
         assert_eq!(config.output_directory, "./build");
@@ -445,6 +475,7 @@ mod tests {
                 default_priority: Some(0.5),
                 default_changefreq: Some("weekly".to_string()),
             }),
+            robots: None,
         };
 
         assert_eq!(config.base_url, Some("https://example.com".to_string()));

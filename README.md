@@ -68,6 +68,7 @@ Current behavior:
 - direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`) and trigger a full-page reload, without recreating the output directory
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
 - hooks are ignored in dev mode
+- missing paths are answered with a `404` status and your `404.html` page if you have one (see [404 Page](#404-page)), otherwise plain text
 
 The dev server defaults to `http://127.0.0.1:4000`.
 
@@ -91,6 +92,9 @@ Balzac supports different directories that you are free to create or skip:
 - assets_directory (optional): directory where static assets will reside
 - content_directory (optional): directory where content (markdown) will reside
 - global: fill this array if you want to have global data available in all the templates and files
+- base_url (optional): the public URL of the site, used for the sitemap and robots.txt
+- sitemap (optional): see `balzac init --sitemap`
+- robots (optional): see [robots.txt](#robotstxt)
 
 ### Vite
 
@@ -114,6 +118,31 @@ balzac dev
 ```
 
 Templates using `{{vite_url "main.js"}}` will resolve to the Vite dev server in `balzac dev` and to the built manifest in `balzac build`.
+
+## 404 Page
+
+Create `pages/404.hbs` (or `.html`/`.handlebars`) and it is rendered to `dist/404.html` like any other page. Most static hosts (GitHub Pages, Netlify, Cloudflare Pages, ...) serve this file automatically for missing paths. The 404 page is always left out of the sitemap, and `balzac dev` serves it with a `404` status for any path that doesn't exist.
+
+## robots.txt
+
+Balzac writes a `dist/robots.txt` that allows all crawlers. When the sitemap is generated (`base_url` set and sitemap not disabled), a `Sitemap:` line pointing to it is added:
+
+```txt
+User-agent: *
+Allow: /
+
+Sitemap: https://example.com/sitemap.xml
+```
+
+Customize or disable it in `balzac.toml`:
+
+```toml
+[robots]
+enabled = true            # set to false to skip generating robots.txt
+disallow = ["/drafts/"]   # replaces `Allow: /` with these `Disallow:` rules
+```
+
+To write your own, put a `robots.txt` in your pages directory (`pages/robots.txt`). It is copied verbatim to `dist/robots.txt` and replaces the generated file, even when `enabled = false`. The pages directory is used because it maps to the root of your site, which is the only place crawlers look for `robots.txt`; files in `assets/` are published under `/assets/`.
 
 ## Hooks
 

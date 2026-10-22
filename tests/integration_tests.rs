@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 // Import from the main crate
-use balzac::config::{Config, SitemapConfig};
+use balzac::config::{Config, RobotsConfig, SitemapConfig};
 use balzac::{
     discover_collections, discover_static_pages, make_dist_folder, render_collection_items,
-    render_pages, write_sitemap,
+    render_pages, write_robots, write_sitemap,
 };
 
 /// Helper function to create a temporary project structure
@@ -78,6 +78,7 @@ fn test_partials_registration() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -116,6 +117,7 @@ fn test_partials_registration_without_folder() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -160,6 +162,7 @@ fn test_full_workflow_single_page() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -220,6 +223,7 @@ fn test_full_workflow_multiple_pages() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -290,6 +294,7 @@ fn test_workflow_with_global_data() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -339,6 +344,7 @@ fn test_make_dist_folder_creates_directory() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -378,6 +384,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -419,6 +426,7 @@ fn test_workflow_preserves_file_extensions() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -471,6 +479,7 @@ fn test_template_with_conditionals() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -525,6 +534,7 @@ fn test_sitemap_generation_with_static_pages() {
             default_priority: Some(0.5),
             default_changefreq: None,
         }),
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -622,6 +632,7 @@ fn test_sitemap_generation_with_collections() {
             default_priority: None,
             default_changefreq: None,
         }),
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -718,6 +729,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         bundler: None,
         base_url: Some("https://example.com".to_string()),
         sitemap: Some(SitemapConfig::default()),
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -772,6 +784,7 @@ fn test_no_sitemap_without_base_url() {
         bundler: None,
         base_url: None, // No base_url configured
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -850,6 +863,7 @@ fn test_custom_tag_renderer_for_links() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -948,6 +962,7 @@ fn test_collections_available_in_static_and_details_pages() {
         bundler: None,
         base_url: None,
         sitemap: None,
+        robots: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -977,4 +992,150 @@ fn test_collections_available_in_static_and_details_pages() {
     let details =
         fs::read_to_string(output_dir.join("posts/older.html")).expect("Failed to read details");
     assert_eq!(details, "<h1>Older</h1>[newer][older][undated]");
+}
+
+/// Run the build steps that produce pages, sitemap and robots.txt
+fn build_site(config: &Config, root: &std::path::Path) -> PathBuf {
+    let resolved_config = config.resolve(root);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages.add_pages(discover_static_pages(&resolved_config).expect("Failed to discover"));
+
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    render_pages(&resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
+    write_sitemap(&resolved_config, &site_pages).expect("Failed to write sitemap");
+    write_robots(&resolved_config).expect("Failed to write robots.txt");
+
+    resolved_config.output_directory
+}
+
+#[test]
+fn test_404_page_is_built_and_excluded_from_sitemap() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+    fs::write(pages_dir.join("404.hbs"), "<h1>Not found</h1>").expect("Failed to write 404");
+
+    let config = Config {
+        base_url: Some("https://example.com".to_string()),
+        ..Config::default()
+    };
+    let output_dir = build_site(&config, &temp_path);
+
+    let not_found = fs::read_to_string(output_dir.join("404.html")).expect("404.html missing");
+    assert_eq!(not_found, "<h1>Not found</h1>");
+
+    let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("sitemap missing");
+    assert!(sitemap.contains("<loc>https://example.com/</loc>"));
+    assert!(
+        !sitemap.contains("404"),
+        "404 page must not be in sitemap: {sitemap}"
+    );
+}
+
+#[test]
+fn test_robots_default_includes_sitemap() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+
+    let config = Config {
+        base_url: Some("https://example.com/".to_string()),
+        ..Config::default()
+    };
+    let output_dir = build_site(&config, &temp_path);
+
+    let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
+    assert_eq!(
+        robots,
+        "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n"
+    );
+}
+
+#[test]
+fn test_robots_without_sitemap() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+
+    // no base_url: no sitemap, so no Sitemap line
+    let output_dir = build_site(&Config::default(), &temp_path);
+    let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
+    assert_eq!(robots, "User-agent: *\nAllow: /\n");
+
+    // sitemap explicitly disabled
+    let config = Config {
+        base_url: Some("https://example.com".to_string()),
+        sitemap: Some(SitemapConfig {
+            enabled: false,
+            ..SitemapConfig::default()
+        }),
+        ..Config::default()
+    };
+    let output_dir = build_site(&config, &temp_path);
+    let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
+    assert!(!robots.contains("Sitemap:"));
+}
+
+#[test]
+fn test_robots_custom_rules_and_sitemap_filename() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+
+    let config: Config = toml::from_str(
+        r#"
+base_url = "https://example.com"
+
+[sitemap]
+filename = "map.xml"
+
+[robots]
+disallow = ["/drafts/"]
+"#,
+    )
+    .expect("Failed to parse config");
+    let output_dir = build_site(&config, &temp_path);
+
+    let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
+    assert_eq!(
+        robots,
+        "User-agent: *\nDisallow: /drafts/\n\nSitemap: https://example.com/map.xml\n"
+    );
+}
+
+#[test]
+fn test_robots_disabled() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+
+    let config = Config {
+        robots: Some(RobotsConfig {
+            enabled: false,
+            ..RobotsConfig::default()
+        }),
+        ..Config::default()
+    };
+    let output_dir = build_site(&config, &temp_path);
+
+    assert!(!output_dir.join("robots.txt").exists());
+}
+
+#[test]
+fn test_user_robots_in_pages_wins() {
+    let (_temp, temp_path, pages_dir, ..) = setup_test_project();
+    let user_robots = "User-agent: *\nDisallow: /\n";
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+    fs::write(pages_dir.join("robots.txt"), user_robots).expect("Failed to write robots.txt");
+
+    let config = Config {
+        base_url: Some("https://example.com".to_string()),
+        // generation disabled must not prevent the user's own file from being published
+        robots: Some(RobotsConfig {
+            enabled: false,
+            ..RobotsConfig::default()
+        }),
+        ..Config::default()
+    };
+    let output_dir = build_site(&config, &temp_path);
+
+    let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
+    assert_eq!(robots, user_robots);
 }
