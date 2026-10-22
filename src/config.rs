@@ -147,16 +147,17 @@ impl Default for Config {
 }
 
 impl Config {
+    #[must_use]
     pub fn resolve(&self, root: &std::path::Path) -> ResolvedConfig {
         ResolvedConfig {
             root_directory: root.to_path_buf(),
-            output_directory: self.resolve_path(&self.output_directory, root),
-            pages_directory: self.resolve_path(&self.pages_directory, root),
-            layouts_directory: self.resolve_path(&self.layouts_directory, root),
-            partials_directory: self.resolve_path(&self.partials_directory, root),
-            assets_directory: self.resolve_path(&self.assets_directory, root),
-            content_directory: self.resolve_path(&self.content_directory, root),
-            tags_directory: self.resolve_path(&self.tags_directory, root),
+            output_directory: Self::resolve_path(&self.output_directory, root),
+            pages_directory: Self::resolve_path(&self.pages_directory, root),
+            layouts_directory: Self::resolve_path(&self.layouts_directory, root),
+            partials_directory: Self::resolve_path(&self.partials_directory, root),
+            assets_directory: Self::resolve_path(&self.assets_directory, root),
+            content_directory: Self::resolve_path(&self.content_directory, root),
+            tags_directory: Self::resolve_path(&self.tags_directory, root),
             global: self.global.clone(),
             hooks: self.hooks.clone(),
             bundler: self.bundler.clone(),
@@ -166,7 +167,7 @@ impl Config {
         }
     }
 
-    fn resolve_path(&self, path: &str, root: &std::path::Path) -> std::path::PathBuf {
+    fn resolve_path(path: &str, root: &std::path::Path) -> std::path::PathBuf {
         let p = std::path::PathBuf::from(path);
         if p.is_absolute() { p } else { root.join(p) }
     }
@@ -250,8 +251,8 @@ impl std::fmt::Display for CreateConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CreateConfigError::AlreadyExists => write!(f, "balzac.toml already exists"),
-            CreateConfigError::Io(e) => write!(f, "IO error: {}", e),
-            CreateConfigError::Serialize(e) => write!(f, "Serialization error: {}", e),
+            CreateConfigError::Io(e) => write!(f, "IO error: {e}"),
+            CreateConfigError::Serialize(e) => write!(f, "Serialization error: {e}"),
         }
     }
 }
@@ -261,7 +262,7 @@ impl std::error::Error for CreateConfigError {
         match self {
             CreateConfigError::Io(e) => Some(e),
             CreateConfigError::Serialize(e) => Some(e),
-            _ => None,
+            CreateConfigError::AlreadyExists => None,
         }
     }
 }

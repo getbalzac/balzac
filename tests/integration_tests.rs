@@ -94,7 +94,7 @@ fn test_partials_registration() {
 fn test_partials_registration_without_folder() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -118,12 +118,12 @@ fn test_partials_registration_without_folder() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
     renderer.init(&resolved_config);
 
     assert!(
-        renderer.registry.get_templates().len() == 0,
+        renderer.registry.get_templates().is_empty(),
         "Could not register partial alert"
     );
 }
@@ -132,7 +132,7 @@ fn test_partials_registration_without_folder() {
 fn test_full_workflow_single_page() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -162,7 +162,7 @@ fn test_full_workflow_single_page() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     // Run the workflow
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
@@ -191,7 +191,7 @@ fn test_full_workflow_single_page() {
 fn test_full_workflow_multiple_pages() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -222,7 +222,7 @@ fn test_full_workflow_multiple_pages() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     // Run the workflow
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
@@ -258,7 +258,7 @@ fn test_full_workflow_multiple_pages() {
 fn test_workflow_with_global_data() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -292,7 +292,7 @@ fn test_workflow_with_global_data() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     // Run the workflow
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
@@ -352,7 +352,7 @@ fn test_make_dist_folder_creates_directory() {
 fn test_make_dist_folder_recreates_existing_directory() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -380,7 +380,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
     // Directory should exist but be empty
@@ -392,7 +392,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
 fn test_workflow_preserves_file_extensions() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -421,7 +421,7 @@ fn test_workflow_preserves_file_extensions() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
     let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
@@ -441,7 +441,7 @@ fn test_workflow_preserves_file_extensions() {
 fn test_template_with_conditionals() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -473,7 +473,7 @@ fn test_template_with_conditionals() {
         sitemap: None,
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
 
     let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
@@ -493,7 +493,7 @@ fn test_template_with_conditionals() {
 fn test_sitemap_generation_with_static_pages() {
     let (
         _temp,
-        _temp_path,
+        temp_path,
         pages_dir,
         output_dir,
         layouts_dir,
@@ -527,7 +527,7 @@ fn test_sitemap_generation_with_static_pages() {
         }),
     };
 
-    let resolved_config = config.resolve(&_temp_path);
+    let resolved_config = config.resolve(&temp_path);
 
     // Create dist folder
     make_dist_folder(&resolved_config).expect("Failed to make dist folder");
@@ -874,17 +874,14 @@ fn test_custom_tag_renderer_for_links() {
     let output_content = fs::read_to_string(&output_file).expect("Failed to read output");
     assert!(
         output_content.contains(r#"class="custom-link""#),
-        "Custom link class should be present: {}",
-        output_content
+        "Custom link class should be present: {output_content}"
     );
     assert!(
         output_content.contains(r#"href="https://example.com""#),
-        "Link href should be preserved: {}",
-        output_content
+        "Link href should be preserved: {output_content}"
     );
     assert!(
         output_content.contains(">this link</a>"),
-        "Link text should be preserved: {}",
-        output_content
+        "Link text should be preserved: {output_content}"
     );
 }

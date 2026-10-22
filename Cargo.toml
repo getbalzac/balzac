@@ -28,6 +28,14 @@ toml = "0.9.10"
 [dev-dependencies]
 tempfile = "3.10"
 
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# balzac exposes a library API, but its pub fns are internal plumbing for the CLI
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
 [profile.release]
 codegen-units = 1 # Allows compiler to perform better optimization.
 lto = true # Enables Link-time Optimization.

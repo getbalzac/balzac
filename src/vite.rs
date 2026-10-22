@@ -82,7 +82,7 @@ pub fn get_file(manifest: &ViteManifest, name: &str) -> std::io::Result<String> 
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("file not found: {}", name),
+            format!("file not found: {name}"),
         ))
     }
 }
@@ -90,7 +90,7 @@ pub fn get_file(manifest: &ViteManifest, name: &str) -> std::io::Result<String> 
 pub fn resolve_asset_url(asset_source: &ViteAssetSource, name: &str) -> Result<String, String> {
     match asset_source {
         ViteAssetSource::Manifest(manifest) => {
-            get_file(manifest, name).map_err(|e| format!("Asset not found in vite manifest: {}", e))
+            get_file(manifest, name).map_err(|e| format!("Asset not found in vite manifest: {e}"))
         }
         ViteAssetSource::DevOrigin(origin) => Ok(format!(
             "{}/{}",
@@ -116,9 +116,9 @@ pub fn parse_manifest(path: PathBuf, root: &Path) -> Result<ViteManifest, String
     })?;
 
     let parsed_config: ViteManifest =
-        from_str(&config_content).map_err(|e| format!("Failed to parse Vite manifest: {}", e))?;
+        from_str(&config_content).map_err(|e| format!("Failed to parse Vite manifest: {e}"))?;
 
-    log::debug!("Parsed vite manifest: {:?}", parsed_config);
+    log::debug!("Parsed vite manifest: {parsed_config:?}");
 
     Ok(parsed_config)
 }

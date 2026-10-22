@@ -12,12 +12,12 @@ use crate::{
 };
 
 pub fn init(path: &Path, features: &[InitFeature]) {
-    log::info!("Initializing new balzac project at {:?}", path);
+    log::info!("Initializing new balzac project at {}", path.display());
 
     if !path.exists()
         && let Err(e) = fs::create_dir_all(path)
     {
-        eprintln!("Error: Could not create project directory: {}", e);
+        eprintln!("Error: Could not create project directory: {e}");
         std::process::exit(1);
     }
 
@@ -31,17 +31,17 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         Ok(()) => log::info!("Created balzac.toml"),
         Err(CreateConfigError::AlreadyExists) => {
             eprintln!(
-                "Error: balzac.toml already exists at {:?}",
-                path.join("balzac.toml")
+                "Error: balzac.toml already exists at {}",
+                path.join("balzac.toml").display()
             );
             std::process::exit(1);
         }
         Err(CreateConfigError::Io(e)) => {
-            eprintln!("Error: Could not create balzac.toml: {}", e);
+            eprintln!("Error: Could not create balzac.toml: {e}");
             std::process::exit(1);
         }
         Err(CreateConfigError::Serialize(e)) => {
-            eprintln!("Error: Could not serialize config: {}", e);
+            eprintln!("Error: Could not serialize config: {e}");
             std::process::exit(1);
         }
     }
@@ -51,10 +51,10 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         let dir_path = path.join(dir);
         if !dir_path.exists() {
             if let Err(e) = fs::create_dir_all(&dir_path) {
-                eprintln!("Error: Could not create {} directory: {}", dir, e);
+                eprintln!("Error: Could not create {dir} directory: {e}");
                 std::process::exit(1);
             }
-            log::info!("Created directory: {}", dir);
+            log::info!("Created directory: {dir}");
         }
     }
 
@@ -85,7 +85,7 @@ pub fn build(path: &Path) {
     match make_dist_folder(&resolved_config) {
         Ok(()) => {}
         Err(e) => {
-            log::error!("Error creating output directory: {}", e);
+            log::error!("Error creating output directory: {e}");
             std::process::exit(1);
         }
     }
@@ -95,14 +95,14 @@ pub fn build(path: &Path) {
     let static_pages = match discover_static_pages(&resolved_config) {
         Ok(pages) => pages,
         Err(e) => {
-            log::error!("Error discovering static pages: {}", e);
+            log::error!("Error discovering static pages: {e}");
             std::process::exit(1);
         }
     };
     let collection_pages = match discover_collections(&resolved_config) {
         Ok(pages) => pages,
         Err(e) => {
-            log::error!("Error discovering collections: {}", e);
+            log::error!("Error discovering collections: {e}");
             std::process::exit(1);
         }
     };
@@ -122,7 +122,7 @@ pub fn build(path: &Path) {
     match render_pages(&resolved_config, site_pages.all(), &render) {
         Ok(()) => {}
         Err(e) => {
-            log::error!("Error rendering static pages: {}", e);
+            log::error!("Error rendering static pages: {e}");
             std::process::exit(1);
         }
     }
@@ -132,7 +132,7 @@ pub fn build(path: &Path) {
     match render_collection_items(&resolved_config, site_pages.all(), &render) {
         Ok(()) => {}
         Err(e) => {
-            log::error!("Error rendering collections: {}", e);
+            log::error!("Error rendering collections: {e}");
             std::process::exit(1);
         }
     }
@@ -144,7 +144,7 @@ pub fn build(path: &Path) {
     match write_sitemap(&resolved_config, &site_pages) {
         Ok(()) => {}
         Err(e) => {
-            log::error!("Error writing sitemap: {}", e);
+            log::error!("Error writing sitemap: {e}");
             std::process::exit(1);
         }
     }
@@ -156,7 +156,7 @@ pub fn build(path: &Path) {
     match add_assets(&resolved_config) {
         Ok(()) => {}
         Err(e) => {
-            log::error!("Error handling assets: {}", e);
+            log::error!("Error handling assets: {e}");
             std::process::exit(1);
         }
     }
@@ -167,7 +167,7 @@ pub fn build(path: &Path) {
 
 pub fn dev(path: &Path, host: &str, port: u16) {
     if let Err(error) = dev::run(path, host, port) {
-        log::error!("Error running dev server: {}", error);
+        log::error!("Error running dev server: {error}");
         std::process::exit(1);
     }
 }

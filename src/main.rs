@@ -86,11 +86,11 @@ fn get_path_arg(matches: &clap::ArgMatches, name: &str) -> PathBuf {
     match matches.try_get_one::<PathBuf>(name) {
         Ok(Some(path)) => path.clone(),
         Ok(None) => std::env::current_dir().unwrap_or_else(|e| {
-            eprintln!("Error: Could not determine current directory: {}", e);
+            eprintln!("Error: Could not determine current directory: {e}");
             std::process::exit(1);
         }),
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::config::SitemapConfig;
@@ -18,6 +19,8 @@ pub struct SitemapMeta {
 }
 
 impl SitemapMeta {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // sitemap priorities are 0.0-1.0
     pub fn from_frontmatter(fm: &Value) -> Self {
         let mut meta = SitemapMeta::default();
 
@@ -60,6 +63,7 @@ pub struct SitePages {
 }
 
 impl SitePages {
+    #[must_use]
     pub fn new() -> Self {
         Self { pages: Vec::new() }
     }
@@ -68,10 +72,12 @@ impl SitePages {
         self.pages.extend(pages);
     }
 
+    #[must_use]
     pub fn all(&self) -> &[PageEntry] {
         &self.pages
     }
 
+    #[must_use]
     pub fn static_pages(&self) -> Vec<&PageEntry> {
         self.pages
             .iter()
@@ -79,6 +85,7 @@ impl SitePages {
             .collect()
     }
 
+    #[must_use]
     pub fn collection_items(&self) -> Vec<&PageEntry> {
         self.pages
             .iter()
@@ -86,6 +93,7 @@ impl SitePages {
             .collect()
     }
 
+    #[must_use]
     pub fn collection(&self, name: &str) -> Vec<&PageEntry> {
         self.pages
             .iter()
@@ -93,6 +101,7 @@ impl SitePages {
             .collect()
     }
 
+    #[must_use]
     pub fn sitemap_pages(&self) -> Vec<&PageEntry> {
         self.pages
             .iter()
@@ -102,6 +111,7 @@ impl SitePages {
 }
 
 /// Generate sitemap XML content
+#[must_use]
 pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &SitemapConfig) -> String {
     let mut xml = String::new();
     xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -115,10 +125,10 @@ pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &Sitemap
         xml.push_str("  <url>\n");
 
         let full_url = format!("{}{}", base_url, page.url_path);
-        xml.push_str(&format!("    <loc>{}</loc>\n", escape_xml(&full_url)));
+        let _ = writeln!(xml, "    <loc>{}</loc>", escape_xml(&full_url));
 
         if let Some(ref lastmod) = page.sitemap_meta.lastmod {
-            xml.push_str(&format!("    <lastmod>{}</lastmod>\n", escape_xml(lastmod)));
+            let _ = writeln!(xml, "    <lastmod>{}</lastmod>", escape_xml(lastmod));
         }
 
         let changefreq = page
@@ -127,15 +137,12 @@ pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &Sitemap
             .as_ref()
             .or(config.default_changefreq.as_ref());
         if let Some(freq) = changefreq {
-            xml.push_str(&format!(
-                "    <changefreq>{}</changefreq>\n",
-                escape_xml(freq)
-            ));
+            let _ = writeln!(xml, "    <changefreq>{}</changefreq>", escape_xml(freq));
         }
 
         let priority = page.sitemap_meta.priority.or(config.default_priority);
         if let Some(p) = priority {
-            xml.push_str(&format!("    <priority>{:.1}</priority>\n", p));
+            let _ = writeln!(xml, "    <priority>{p:.1}</priority>");
         }
 
         xml.push_str("  </url>\n");

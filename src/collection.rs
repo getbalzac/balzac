@@ -81,11 +81,12 @@ fn parse_yaml_to_json(yaml: &str) -> std::io::Result<Value> {
     serde_yaml::from_str(yaml).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Could not parse frontmatter YAML: {}", e),
+            format!("Could not parse frontmatter YAML: {e}"),
         )
     })
 }
 
+#[must_use]
 pub fn build_comrak_options() -> Options<'static> {
     let mut options = Options::default();
 

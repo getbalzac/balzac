@@ -21,18 +21,18 @@ use crate::{
 
 pub fn make_dist_folder(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.output_directory)?;
-    if !dir_exists {
-        log::debug!(
-            "Creating output directory {}",
-            parsed_config.output_directory.display()
-        );
-        fs::create_dir(&parsed_config.output_directory)?;
-    } else {
+    if dir_exists {
         log::debug!(
             "Output directory {} already exists, recreating",
             parsed_config.output_directory.display()
         );
         fs::remove_dir_all(&parsed_config.output_directory)?;
+        fs::create_dir(&parsed_config.output_directory)?;
+    } else {
+        log::debug!(
+            "Creating output directory {}",
+            parsed_config.output_directory.display()
+        );
         fs::create_dir(&parsed_config.output_directory)?;
     }
     Ok(())
@@ -99,10 +99,7 @@ pub fn discover_static_pages(
         let extension = entry_path
             .extension()
             .map(|e| e.to_string_lossy().to_string());
-        let is_page_file = matches!(
-            extension.as_deref(),
-            Some("hbs") | Some("handlebars") | Some("html")
-        );
+        let is_page_file = matches!(extension.as_deref(), Some("hbs" | "handlebars" | "html"));
         if !is_page_file {
             log::debug!(
                 "Skipping non-page file {} during discovery",
@@ -150,7 +147,7 @@ pub fn discover_collections(
         }
 
         let collection_name = dir.file_name().to_string_lossy().to_string();
-        log::debug!("Discovering collection: {}", collection_name);
+        log::debug!("Discovering collection: {collection_name}");
 
         let details_page_path = parsed_config
             .pages_directory
@@ -159,10 +156,7 @@ pub fn discover_collections(
         let has_details_page = fs::exists(&details_page_path)?;
 
         if !has_details_page {
-            log::warn!(
-                "Collection {} has no details page, skipping",
-                collection_name
-            );
+            log::warn!("Collection {collection_name} has no details page, skipping");
             continue;
         }
 
@@ -223,9 +217,11 @@ pub fn render_collection_items(
     let mut created_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for page in pages {
-        let collection_name = match &page.page_type {
-            PageType::Collection { name } => name,
-            _ => continue,
+        let PageType::Collection {
+            name: collection_name,
+        } = &page.page_type
+        else {
+            continue;
         };
 
         if !created_dirs.contains(collection_name) {
@@ -234,7 +230,7 @@ pub fn render_collection_items(
                 fs::create_dir(&collection_output_dir)?;
             }
             created_dirs.insert(collection_name.clone());
-            log::info!("Rendering collection {}", collection_name);
+            log::info!("Rendering collection {collection_name}");
         }
 
         render_collection_page(parsed_config, page, render)?;
@@ -247,12 +243,9 @@ pub fn write_sitemap(
     parsed_config: &config::ResolvedConfig,
     site_pages: &SitePages,
 ) -> std::io::Result<()> {
-    let base_url = match &parsed_config.base_url {
-        Some(url) => url,
-        None => {
-            log::debug!("No base_url configured, skipping sitemap generation");
-            return Ok(());
-        }
+    let Some(base_url) = &parsed_config.base_url else {
+        log::debug!("No base_url configured, skipping sitemap generation");
+        return Ok(());
     };
 
     let sitemap_config = parsed_config.sitemap.clone().unwrap_or_default();
@@ -273,13 +266,15 @@ pub fn write_sitemap(
     Ok(())
 }
 
+#[must_use]
 pub fn is_supported_page_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("hbs") | Some("handlebars") | Some("html")
+        Some("hbs" | "handlebars" | "html")
     )
 }
 
+#[must_use]
 pub fn static_page_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
@@ -295,7 +290,7 @@ pub fn static_page_entry_from_source(
     let url_path = if file_stem == "index" {
         "/".to_string()
     } else {
-        format!("/{}", file_stem)
+        format!("/{file_stem}")
     };
     let output_path = parsed_config
         .output_directory
@@ -316,9 +311,8 @@ pub fn collection_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> std::io::Result<Option<PageEntry>> {
-    let relative_path = match source_path.strip_prefix(&parsed_config.content_directory) {
-        Ok(path) => path,
-        Err(_) => return Ok(None),
+    let Ok(relative_path) = source_path.strip_prefix(&parsed_config.content_directory) else {
+        return Ok(None);
     };
     let mut components = relative_path.components();
     let Some(collection_name) = components
@@ -352,7 +346,7 @@ pub fn collection_entry_from_source(
     let file_content = fs::read_to_string(source_path)?;
     let parsed_content = collection::parse_markdown(&file_content)?;
     let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
-    let url_path = format!("/{}/{}", collection_name, file_stem);
+    let url_path = format!("/{collection_name}/{file_stem}");
     let output_path = parsed_config
         .output_directory
         .join(&collection_name)
@@ -379,10 +373,10 @@ pub fn render_static_page(
 ) -> std::io::Result<()> {
     log::info!(
         "Rendering page {}",
-        page.source_path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+        page.source_path.file_name().map_or_else(
+            || "unknown".to_string(),
+            |f| f.to_string_lossy().to_string()
+        )
     );
 
     let content = fs::read_to_string(&page.source_path)?;
@@ -432,7 +426,7 @@ pub fn render_collection_page(
         fs::read_to_string(&details_page_path)?,
         merge_contexts(
             parsed_config,
-            serde_json::json!({"content": html_content, "fm": frontmatter}),
+            &serde_json::json!({"content": html_content, "fm": frontmatter}),
         ),
     );
 
@@ -462,6 +456,7 @@ pub fn remove_output_for_source(
     Ok(Some(output_path))
 }
 
+#[must_use]
 pub fn collection_output_path_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,

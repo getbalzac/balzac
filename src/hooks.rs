@@ -17,7 +17,7 @@ pub enum HookPhase {
 
 impl HookPhase {
     /// Returns the hook name for logging purposes
-    fn name(&self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             HookPhase::BuildBefore => "build_before",
             HookPhase::BuildAfter => "build_after",
@@ -36,9 +36,10 @@ pub struct HookExecutor<'a> {
 }
 
 impl<'a> HookExecutor<'a> {
-    /// Creates a new HookExecutor
+    /// Creates a new `HookExecutor`
     ///
     /// Accepts None for hooks - executor will silently skip all hooks
+    #[must_use]
     pub fn new(hooks: Option<&'a Hooks>, base_path: &'a Path) -> Self {
         Self { hooks, base_path }
     }
@@ -72,13 +73,13 @@ impl<'a> HookExecutor<'a> {
         };
 
         let hook_name = phase.name();
-        log::info!("Found {} hook, running", hook_name);
+        log::info!("Found {hook_name} hook, running");
         let start = Instant::now();
 
         // Parse command
         let parts = split(hook_command).expect("Invalid command syntax");
         if parts.is_empty() {
-            log::error!("{} hook is empty", hook_name);
+            log::error!("{hook_name} hook is empty");
             std::process::exit(1);
         }
 
@@ -102,7 +103,7 @@ impl<'a> HookExecutor<'a> {
                 }
             }
             Err(e) => {
-                log::error!("Error running {} hook: {}", hook_name, e);
+                log::error!("Error running {hook_name} hook: {e}");
                 std::process::exit(1);
             }
         }

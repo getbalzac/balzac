@@ -22,7 +22,7 @@ pub struct HandlebarsRenderer<'a> {
     pub tag_templates: HashMap<String, String>,
 }
 
-impl<'a> HandlebarsRenderer<'a> {
+impl HandlebarsRenderer<'_> {
     fn register_partials(&mut self, configuration: &config::ResolvedConfig) {
         let partial_dir_exists = fs::exists(&configuration.partials_directory)
             .expect("Could not check if partial dir exists");
@@ -93,7 +93,7 @@ impl<'a> HandlebarsRenderer<'a> {
                     .expect("Could not get file stem")
                     .to_string_lossy()
                     .to_string();
-                log::debug!("Registering tag template for <{}>", tag_name);
+                log::debug!("Registering tag template for <{tag_name}>");
                 self.tag_templates.insert(tag_name, template_content);
             }
         } else {
@@ -112,7 +112,7 @@ impl<'a> HandlebarsRenderer<'a> {
                 let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
                 let manifest = parse_manifest(manifest_path, &configuration.root_directory)
                     .unwrap_or_else(|e| {
-                        log::error!("{}", e);
+                        log::error!("{e}");
                         std::process::exit(1);
                     });
                 ViteAssetSource::Manifest(manifest)
@@ -122,7 +122,7 @@ impl<'a> HandlebarsRenderer<'a> {
         }
     }
 
-    fn get_tag_name(&self, value: &NodeValue) -> Option<String> {
+    fn get_tag_name(value: &NodeValue) -> Option<String> {
         match value {
             NodeValue::Link(_) => Some("a".to_string()),
             NodeValue::Image(_) => Some("img".to_string()),
@@ -153,7 +153,7 @@ impl<'a> HandlebarsRenderer<'a> {
         }
     }
 
-    fn build_props(&self, node: &AstNode) -> serde_json::Value {
+    fn build_props(node: &AstNode) -> serde_json::Value {
         let data = node.data.borrow();
         match &data.value {
             NodeValue::Link(link) => serde_json::json!({
@@ -189,7 +189,6 @@ impl<'a> HandlebarsRenderer<'a> {
     }
 
     fn render_children_to_html<'b>(
-        &self,
         node: &'b AstNode<'b>,
         arena: &'b Arena<AstNode<'b>>,
         options: &Options,
@@ -232,7 +231,7 @@ impl<'a> HandlebarsRenderer<'a> {
 
         let tag_name = {
             let data = node.data.borrow();
-            self.get_tag_name(&data.value)
+            Self::get_tag_name(&data.value)
         };
 
         if let Some(tag_name) = tag_name
@@ -243,10 +242,10 @@ impl<'a> HandlebarsRenderer<'a> {
                 match &data.value {
                     NodeValue::Code(c) => Self::html_escape(&c.literal),
                     NodeValue::CodeBlock(c) => Self::html_escape(&c.literal),
-                    _ => self.render_children_to_html(node, arena, options)?,
+                    _ => Self::render_children_to_html(node, arena, options)?,
                 }
             };
-            let props = self.build_props(node);
+            let props = Self::build_props(node);
 
             let template_data = serde_json::json!({
                 "props": props,
@@ -259,7 +258,7 @@ impl<'a> HandlebarsRenderer<'a> {
                 .map_err(|e| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Tag template render error for <{}>: {}", tag_name, e),
+                        format!("Tag template render error for <{tag_name}>: {e}"),
                     )
                 })?;
 
@@ -402,7 +401,7 @@ mod tests {
     #[test]
     fn test_render_empty_template_with_data() {
         let renderer = create_renderer();
-        let template = "".to_string();
+        let template = String::new();
         let data = serde_json::json!({
             "unused": "data"
         });
@@ -459,8 +458,7 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("<code class='inline-code'>hello_world()</code>"),
-            "Expected inline code content, got: {}",
-            html
+            "Expected inline code content, got: {html}"
         );
     }
 
@@ -476,8 +474,7 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("fn main() {}"),
-            "Expected code block content, got: {}",
-            html
+            "Expected code block content, got: {html}"
         );
     }
 
@@ -493,8 +490,7 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             !html.contains("class='break'"),
-            "Soft breaks should NOT trigger br template, got: {}",
-            html
+            "Soft breaks should NOT trigger br template, got: {html}"
         );
     }
 
@@ -509,8 +505,7 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("<code>&amp; &lt; &gt; &quot;&#x27; &#x2F;</code>"),
-            "Code literal should be HTML-escaped, got: {}",
-            html
+            "Code literal should be HTML-escaped, got: {html}"
         );
     }
 
@@ -525,13 +520,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("&lt;script&gt;alert(1)&lt;&#x2F;script&gt;"),
-            "Code block literal should be HTML-escaped, got: {}",
-            html
+            "Code block literal should be HTML-escaped, got: {html}"
         );
         assert!(
             !html.contains("<script>alert(1)</script>"),
-            "Raw script tag should NOT appear, got: {}",
-            html
+            "Raw script tag should NOT appear, got: {html}"
         );
     }
 
@@ -547,13 +540,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("&lt;script&gt;"),
-            "XSS payload should be escaped, got: {}",
-            html
+            "XSS payload should be escaped, got: {html}"
         );
         assert!(
             !html.contains("<script>alert('xss')</script>"),
-            "Raw script tag should NOT appear, got: {}",
-            html
+            "Raw script tag should NOT appear, got: {html}"
         );
     }
 
@@ -569,13 +560,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("&lt;script&gt;"),
-            "props.literal should be HTML-escaped, got: {}",
-            html
+            "props.literal should be HTML-escaped, got: {html}"
         );
         assert!(
             !html.contains("<script>alert(1)</script>"),
-            "Raw script tag should NOT appear in props.literal, got: {}",
-            html
+            "Raw script tag should NOT appear in props.literal, got: {html}"
         );
     }
 
@@ -591,13 +580,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("&lt;script&gt;alert(1)&lt;&#x2F;script&gt;"),
-            "props.literal should be HTML-escaped, got: {}",
-            html
+            "props.literal should be HTML-escaped, got: {html}"
         );
         assert!(
             !html.contains("<script>alert(1)</script>"),
-            "Raw script tag should NOT appear in props.literal, got: {}",
-            html
+            "Raw script tag should NOT appear in props.literal, got: {html}"
         );
     }
 
@@ -613,13 +600,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("class='don&#x27;t'"),
-            "Apostrophe in attribute should be escaped, got: {}",
-            html
+            "Apostrophe in attribute should be escaped, got: {html}"
         );
         assert!(
             !html.contains("class='don't'"),
-            "Raw apostrophe should NOT break out of attribute, got: {}",
-            html
+            "Raw apostrophe should NOT break out of attribute, got: {html}"
         );
     }
 
@@ -635,13 +620,11 @@ mod tests {
         let html = renderer.render_markdown(markdown).unwrap();
         assert!(
             html.contains("class='x&#x2F;y'"),
-            "Slash in attribute should be escaped, got: {}",
-            html
+            "Slash in attribute should be escaped, got: {html}"
         );
         assert!(
             !html.contains("class='x/y'"),
-            "Raw slash should NOT appear in attribute, got: {}",
-            html
+            "Raw slash should NOT appear in attribute, got: {html}"
         );
     }
 }

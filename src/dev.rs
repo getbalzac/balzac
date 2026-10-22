@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -28,14 +29,9 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
 
     let shared_config = Arc::new(RwLock::new(session.resolved_config.clone()));
     let events = EventBroker::default();
-    start_http_server(
-        host.to_string(),
-        port,
-        shared_config.clone(),
-        events.clone(),
-    )?;
+    start_http_server(host, port, shared_config.clone(), events.clone())?;
 
-    log::info!("Balzac dev server running at http://{}:{}", host, port);
+    log::info!("Balzac dev server running at http://{host}:{port}");
 
     let mut snapshot = capture_snapshot(&session.resolved_config)?;
 
@@ -44,7 +40,7 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
         let latest_snapshot = match capture_snapshot(&session.resolved_config) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                log::warn!("Error refreshing watched files, retrying: {}", error);
+                log::warn!("Error refreshing watched files, retrying: {error}");
                 continue;
             }
         };
@@ -58,10 +54,7 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
         let debounced_snapshot = match capture_snapshot(&session.resolved_config) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                log::warn!(
-                    "Error refreshing watched files after debounce, retrying: {}",
-                    error
-                );
+                log::warn!("Error refreshing watched files after debounce, retrying: {error}");
                 continue;
             }
         };
@@ -74,7 +67,7 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
         let reload_messages = match session.process_changes(&debounced_changes) {
             Ok(messages) => messages,
             Err(error) => {
-                log::warn!("Error processing file change, skipping reload: {}", error);
+                log::warn!("Error processing file change, skipping reload: {error}");
                 if let Ok(updated_snapshot) = capture_snapshot(&session.resolved_config) {
                     snapshot = updated_snapshot;
                 } else {
@@ -92,12 +85,12 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
             *config = session.resolved_config.clone();
         }
         for message in reload_messages {
-            events.broadcast(message);
+            events.broadcast(&message);
         }
         match capture_snapshot(&session.resolved_config) {
             Ok(updated_snapshot) => snapshot = updated_snapshot,
             Err(error) => {
-                log::warn!("Error refreshing watched files after reload: {}", error);
+                log::warn!("Error refreshing watched files after reload: {error}");
             }
         }
     }
@@ -115,7 +108,7 @@ impl DevSession {
             root: root.to_path_buf(),
             resolved_config,
         };
-        session.log_ignored_hooks(&parsed_config);
+        DevSession::log_ignored_hooks(&parsed_config);
         session.build_current_config()?;
         Ok(session)
     }
@@ -183,7 +176,7 @@ impl DevSession {
 
     fn full_rebuild(&mut self) -> std::io::Result<()> {
         let (parsed_config, resolved_config) = load_config(&self.root)?;
-        self.log_ignored_hooks(&parsed_config);
+        Self::log_ignored_hooks(&parsed_config);
         self.resolved_config = resolved_config;
         self.build_current_config()
     }
@@ -220,7 +213,7 @@ impl DevSession {
         renderer
     }
 
-    fn log_ignored_hooks(&self, parsed_config: &Config) {
+    fn log_ignored_hooks(parsed_config: &Config) {
         if parsed_config.hooks.is_some() {
             log::info!("Hooks are configured but ignored in dev mode");
         }
@@ -233,7 +226,7 @@ fn load_config(root: &Path) -> std::io::Result<(Config, ResolvedConfig)> {
     let parsed_config = toml::from_str::<Config>(&config_content).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Could not parse config: {}", error),
+            format!("Could not parse config: {error}"),
         )
     })?;
     let mut resolved_config = parsed_config.resolve(root);
@@ -381,7 +374,7 @@ fn collection_target_paths(
         .to_string_lossy()
         .to_string();
     let output_path = collection_output_path_from_source(config, source_path)?;
-    Some((format!("/{}/{}", collection_name, slug), output_path))
+    Some((format!("/{collection_name}/{slug}"), output_path))
 }
 
 fn is_under(path: &Path, root: &Path) -> bool {
@@ -403,7 +396,7 @@ impl EventBroker {
         receiver
     }
 
-    fn broadcast(&self, event: ReloadMessage) {
+    fn broadcast(&self, event: &ReloadMessage) {
         let mut clients = self
             .clients
             .lock()
@@ -442,12 +435,12 @@ impl ReloadMessage {
 }
 
 fn start_http_server(
-    host: String,
+    host: &str,
     port: u16,
     config: Arc<RwLock<ResolvedConfig>>,
     events: EventBroker,
 ) -> std::io::Result<()> {
-    let listener = TcpListener::bind((host.as_str(), port))?;
+    let listener = TcpListener::bind((host, port))?;
     listener.set_nonblocking(true)?;
 
     thread::spawn(move || {
@@ -457,8 +450,8 @@ fn start_http_server(
                     let config = config.clone();
                     let events = events.clone();
                     thread::spawn(move || {
-                        if let Err(error) = handle_connection(stream, config, events) {
-                            log::debug!("Error handling dev request: {}", error);
+                        if let Err(error) = handle_connection(stream, &config, &events) {
+                            log::debug!("Error handling dev request: {error}");
                         }
                     });
                 }
@@ -466,7 +459,7 @@ fn start_http_server(
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(error) => {
-                    log::error!("Dev server accept error: {}", error);
+                    log::error!("Dev server accept error: {error}");
                     break;
                 }
             }
@@ -478,8 +471,8 @@ fn start_http_server(
 
 fn handle_connection(
     stream: TcpStream,
-    config: Arc<RwLock<ResolvedConfig>>,
-    events: EventBroker,
+    config: &RwLock<ResolvedConfig>,
+    events: &EventBroker,
 ) -> std::io::Result<()> {
     let (method, path) = read_request(&stream)?;
     if method != "GET" && method != "HEAD" {
@@ -493,7 +486,7 @@ fn handle_connection(
     }
 
     if path == SSE_ENDPOINT {
-        return serve_sse(stream, events.subscribe());
+        return serve_sse(stream, &events.subscribe());
     }
 
     let config_guard = config
@@ -553,7 +546,7 @@ fn read_request(stream: &TcpStream) -> std::io::Result<(String, String)> {
 
 fn serve_sse(
     mut stream: TcpStream,
-    receiver: mpsc::Receiver<ReloadMessage>,
+    receiver: &mpsc::Receiver<ReloadMessage>,
 ) -> std::io::Result<()> {
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
@@ -564,7 +557,7 @@ fn serve_sse(
         match receiver.recv_timeout(Duration::from_secs(10)) {
             Ok(message) => {
                 let payload = serde_json::to_string(&message).map_err(std::io::Error::other)?;
-                stream.write_all(format!("data: {}\n\n", payload).as_bytes())?;
+                stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
                 stream.flush()?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -653,7 +646,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("xml") => "application/xml; charset=utf-8",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("woff") => "font/woff",
@@ -669,16 +662,17 @@ fn inject_dev_scripts(html: &str, config: &ResolvedConfig) -> String {
         && let Some(vite) = &bundler.vite
         && vite.enabled
     {
-        scripts.push_str(&format!(
+        let _ = write!(
+            scripts,
             r#"<script type="module" src="{}/@vite/client"></script>"#,
             vite.dev_origin.trim_end_matches('/')
-        ));
+        );
     }
 
-    scripts.push_str(&format!(
-        r#"<script>(()=>{{const normalize=(value)=>{{if(!value||value==="/")return "/";return value.endsWith("/")?value.slice(0,-1):value;}};const source=new EventSource("{}");source.onmessage=(event)=>{{const payload=JSON.parse(event.data);if(payload.kind==="full"){{window.location.reload();return;}}if(payload.kind==="targeted"&&normalize(window.location.pathname)===normalize(payload.url_path)){{window.location.reload();}}}};}})();</script>"#,
-        SSE_ENDPOINT
-    ));
+    let _ = write!(
+        scripts,
+        r#"<script>(()=>{{const normalize=(value)=>{{if(!value||value==="/")return "/";return value.endsWith("/")?value.slice(0,-1):value;}};const source=new EventSource("{SSE_ENDPOINT}");source.onmessage=(event)=>{{const payload=JSON.parse(event.data);if(payload.kind==="full"){{window.location.reload();return;}}if(payload.kind==="targeted"&&normalize(window.location.pathname)===normalize(payload.url_path)){{window.location.reload();}}}};}})();</script>"#
+    );
 
     if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
         let mut injected = String::with_capacity(html.len() + scripts.len());
@@ -687,7 +681,7 @@ fn inject_dev_scripts(html: &str, config: &ResolvedConfig) -> String {
         injected.push_str(&html[index..]);
         injected
     } else {
-        format!("{}{}", html, scripts)
+        format!("{html}{scripts}")
     }
 }
 
@@ -807,14 +801,16 @@ mod tests {
         fs::create_dir_all(&tags).unwrap();
         fs::write(root.join("balzac.toml"), "").unwrap();
 
-        let mut config = Config::default();
-        config.output_directory = output.to_string_lossy().to_string();
-        config.pages_directory = pages.to_string_lossy().to_string();
-        config.layouts_directory = layouts.to_string_lossy().to_string();
-        config.partials_directory = partials.to_string_lossy().to_string();
-        config.assets_directory = assets.to_string_lossy().to_string();
-        config.content_directory = content.to_string_lossy().to_string();
-        config.tags_directory = tags.to_string_lossy().to_string();
+        let config = Config {
+            output_directory: output.to_string_lossy().to_string(),
+            pages_directory: pages.to_string_lossy().to_string(),
+            layouts_directory: layouts.to_string_lossy().to_string(),
+            partials_directory: partials.to_string_lossy().to_string(),
+            assets_directory: assets.to_string_lossy().to_string(),
+            content_directory: content.to_string_lossy().to_string(),
+            tags_directory: tags.to_string_lossy().to_string(),
+            ..Config::default()
+        };
 
         let mut resolved = config.resolve(&root);
         resolved.dev_mode = true;
