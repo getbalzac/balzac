@@ -83,16 +83,20 @@ pub fn build_collections_context(
 }
 
 fn compare_collection_items(a: &serde_json::Value, b: &serde_json::Value) -> Ordering {
-    let date = |item: &serde_json::Value| item["fm"]["date"].as_str().map(str::to_string);
-    let slug = |item: &serde_json::Value| item["slug"].as_str().unwrap_or_default().to_string();
+    fn date(item: &serde_json::Value) -> Option<&str> {
+        item["fm"]["date"].as_str()
+    }
+    fn slug(item: &serde_json::Value) -> &str {
+        item["slug"].as_str().unwrap_or_default()
+    }
 
     match (date(a), date(b)) {
-        (Some(a_date), Some(b_date)) => b_date.cmp(&a_date),
+        (Some(a_date), Some(b_date)) => b_date.cmp(a_date),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
-    .then_with(|| slug(a).cmp(&slug(b)))
+    .then_with(|| slug(a).cmp(slug(b)))
 }
 
 #[cfg(test)]
