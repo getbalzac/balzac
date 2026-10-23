@@ -28,6 +28,12 @@ Create a new project with sitemap support enabled:
 balzac init --sitemap
 ```
 
+Create a new project with RSS/Atom feed support enabled:
+
+```sh
+balzac init --feed
+```
+
 Build the site:
 
 ```sh
@@ -168,6 +174,73 @@ disallow = ["/drafts/"]   # replaces `Allow: /` with these `Disallow:` rules
 ```
 
 To write your own, put a `robots.txt` in your pages directory (`pages/robots.txt`). It is copied verbatim to `dist/robots.txt` and replaces the generated file, even when `enabled = false`. The pages directory is used because it maps to the root of your site, which is the only place crawlers look for `robots.txt`; files in `assets/` are published under `/assets/`.
+
+## Feeds
+
+Balzac can generate an Atom and/or RSS 2.0 feed for each collection. Feeds are opt-in through a `[feed]` section and require `base_url`, since feed links must be absolute.
+
+```toml
+base_url = "https://example.com"
+
+[feed]
+enabled = true          # default: true
+format = "atom"         # "atom" (default), "rss" or "both"
+collections = ["blog"]  # default: every collection
+limit = 20              # items per feed, newest first; 0 = unlimited (default: 20)
+full_content = false    # include the rendered markdown body (default: false)
+title = "My Site"       # default: the collection name
+description = "Latest posts"
+author = "Jane Doe"     # feed-level Atom author; without it, the feed title is used when some entries lack an `author`
+
+[feed.overrides.blog]   # optional per-collection title/description
+title = "My Blog"
+description = "Posts about things"
+```
+
+Each collection gets its own feed, written next to its pages:
+
+- Atom: `<output_directory>/<collection>/atom.xml`, served at `/<collection>/atom.xml`
+- RSS: `<output_directory>/<collection>/feed.xml`, served at `/<collection>/feed.xml`
+
+Set `collections = []` to skip per-collection feeds entirely (useful with a combined feed only).
+
+### Combined Feed
+
+A site-wide feed merging several collections (newest first) can be written at the output root as `/atom.xml` and/or `/feed.xml`. It is off by default and accepts three forms:
+
+```toml
+[feed]
+combined = true                  # every collection that has its own feed
+```
+
+```toml
+[feed]
+combined = ["blog", "notes"]     # these collections, whether or not they have their own feed
+```
+
+```toml
+[feed.combined]
+collections = ["blog", "notes"]  # default: the collections that have their own feed
+title = "Everything"             # default: [feed] title, then base_url
+description = "All updates"      # default: [feed] description
+limit = 50                       # default: [feed] limit; 0 = unlimited
+```
+
+Link them from your templates for autodiscovery, e.g. `<link rel="alternate" type="application/atom+xml" href="/blog/atom.xml">`.
+
+### Feed Frontmatter
+
+Feed items are built from these frontmatter keys:
+
+- `date` (required): publication date. Entries without a valid `date` are left out of the feed, with a warning
+- `title`: item title, defaults to the item's URL path
+- `updated` (or `lastmod`): last modification date, defaults to `date`
+- `summary` (or `description`): short plain-text summary
+- `author`: author name (Atom `<author>`, RSS `<dc:creator>`)
+
+Dates can be `2024-01-15`, `2024-01-15T10:30:00`, `2024-01-15 10:30` or full RFC 3339 like `2024-01-15T10:30:00+02:00`. Values without an offset are treated as UTC. Atom output uses RFC 3339 dates and RSS output uses RFC 822 dates, both normalized to UTC.
+
+With `full_content = true`, relative links in the body are resolved against the item URL in Atom (via `xml:base`). RSS has no equivalent, so prefer absolute links if you publish full-content RSS.
 
 ## Hooks
 

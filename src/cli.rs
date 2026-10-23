@@ -1,15 +1,16 @@
 use std::fs;
 use std::path::Path;
 
-use crate::config::{Config, CreateConfigError, InitFeature};
+use crate::config::{Config, CreateConfigError, InitFeature, ResolvedConfig};
 use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
 use crate::listing::render_listing_pages;
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
+use crate::sitemap::SitePages;
 use crate::{
     add_assets, discover_site_pages, make_dist_folder, render_collection_items, render_pages,
-    write_robots, write_sitemap,
+    write_feeds, write_robots, write_sitemap,
 };
 
 pub fn init(path: &Path, features: &[InitFeature]) {
@@ -165,6 +166,8 @@ pub fn build(path: &Path) {
         }
     }
 
+    build_feeds(&resolved_config, &site_pages, &render);
+
     let start = std::time::Instant::now();
     match add_assets(&resolved_config) {
         Ok(()) => {}
@@ -176,6 +179,23 @@ pub fn build(path: &Path) {
     log::info!("Handled assets (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::BuildAfter);
+}
+
+fn build_feeds(
+    resolved_config: &ResolvedConfig,
+    site_pages: &SitePages,
+    render: &HandlebarsRenderer,
+) {
+    if resolved_config.feed.is_none() {
+        return;
+    }
+
+    let start = std::time::Instant::now();
+    if let Err(e) = write_feeds(resolved_config, site_pages, render) {
+        log::error!("Error writing feeds: {e}");
+        std::process::exit(1);
+    }
+    log::info!("Generated feeds (took {:?})", start.elapsed());
 }
 
 pub fn dev(path: &Path, host: &str, port: u16) {

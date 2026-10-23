@@ -19,7 +19,8 @@ use crate::sitemap::{PageType, SitePages};
 use crate::{
     NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_location_from_source, discover_site_pages,
     is_supported_page_file, make_dist_folder, remove_output_for_source, render_collection_items,
-    render_pages, render_static_page, static_page_entry_from_source, write_robots, write_sitemap,
+    render_pages, render_static_page, static_page_entry_from_source, write_feeds, write_robots,
+    write_sitemap,
 };
 
 const SSE_ENDPOINT: &str = "/__balzac/events";
@@ -104,6 +105,8 @@ struct DevSession {
     /// Output files of the generated listing pages from the last render, so
     /// pages that are no longer generated can be removed.
     listing_outputs: BTreeSet<PathBuf>,
+    /// Feed files written by the last render, so stale ones can be removed
+    feed_paths: BTreeSet<PathBuf>,
 }
 
 impl DevSession {
@@ -113,6 +116,7 @@ impl DevSession {
             root: root.to_path_buf(),
             resolved_config,
             listing_outputs: BTreeSet::new(),
+            feed_paths: BTreeSet::new(),
         };
         DevSession::log_ignored_hooks(&parsed_config);
         session.build_current_config()?;
@@ -212,7 +216,28 @@ impl DevSession {
         render_collection_items(&self.resolved_config, site_pages.all(), &renderer)?;
         render_listing_pages(&self.resolved_config, site_pages.all(), &renderer)?;
         self.prune_stale_listings(&site_pages)?;
-        write_sitemap(&self.resolved_config, &site_pages)
+        write_sitemap(&self.resolved_config, &site_pages)?;
+        self.refresh_feeds(&site_pages, &renderer)
+    }
+
+    /// Writes feeds and removes those from the previous render that are no
+    /// longer produced, e.g. after a collection's last dated entry is removed
+    fn refresh_feeds(
+        &mut self,
+        site_pages: &SitePages,
+        renderer: &HandlebarsRenderer,
+    ) -> std::io::Result<()> {
+        let written: BTreeSet<PathBuf> = write_feeds(&self.resolved_config, site_pages, renderer)?
+            .into_iter()
+            .collect();
+        for stale in self.feed_paths.difference(&written) {
+            if fs::exists(stale)? {
+                log::info!("Removing stale feed {}", stale.display());
+                fs::remove_file(stale)?;
+            }
+        }
+        self.feed_paths = written;
+        Ok(())
     }
 
     /// Removes listing pages rendered previously but no longer generated, e.g.
@@ -2113,5 +2138,50 @@ collections = ["posts"]
         fs::write(config.output_directory.join("docs/index.html"), "").unwrap();
 
         assert_eq!(directory_redirect(&config, "/docs"), None);
+    }
+
+    #[test]
+    fn test_process_changes_removes_stale_feeds() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages/posts")).unwrap();
+        fs::create_dir_all(root.join("content/posts")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+content_directory = "./content"
+base_url = "https://example.com"
+
+[feed]
+combined = true
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/posts/details.hbs"), "{{{content}}}").unwrap();
+        fs::write(
+            root.join("content/posts/a.md"),
+            "---\ntitle: A\ndate: 2024-01-15\n---\n",
+        )
+        .unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+        assert!(root.join("dist/posts/atom.xml").exists());
+        assert!(root.join("dist/atom.xml").exists());
+
+        // Clearing the only post's date leaves nothing to publish
+        fs::write(root.join("content/posts/a.md"), "---\ntitle: A\n---\n").unwrap();
+        session
+            .process_changes(&[SourceChange {
+                path: root.join("content/posts/a.md"),
+                change_type: ChangeType::Modified,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert!(!root.join("dist/posts/atom.xml").exists());
+        assert!(!root.join("dist/atom.xml").exists());
     }
 }

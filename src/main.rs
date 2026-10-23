@@ -30,6 +30,11 @@ fn main() {
                     clap::arg!(--sitemap)
                         .help("Include sitemap configuration")
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    clap::arg!(--feed)
+                        .help("Include RSS/Atom feed configuration")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -60,6 +65,9 @@ fn main() {
             let mut features = Vec::new();
             if sub_matches.get_flag("sitemap") {
                 features.push(InitFeature::Sitemap);
+            }
+            if sub_matches.get_flag("feed") {
+                features.push(InitFeature::Feed);
             }
             cli::init(&path, &features);
         }
