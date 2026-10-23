@@ -17,6 +17,20 @@ pub trait Renderer {
     fn render_markdown(&self, body: &str) -> std::io::Result<String>;
 }
 
+// `{{term_url "tags" this}}` -> `/tags/<term slug>/`; empty, with a warning,
+// for values that never get a term page (missing, null, objects, "!!", ...).
+handlebars::handlebars_helper!(term_url_helper: |taxonomy: str, term: Json| {
+    match crate::listing::term_name(term) {
+        Some(name) if !crate::listing::slugify(&name).is_empty() => {
+            crate::listing::term_url(taxonomy, &name)
+        }
+        _ => {
+            log::warn!("term_url: {term} is not a {taxonomy} term, rendering an empty URL");
+            String::new()
+        }
+    }
+});
+
 pub struct HandlebarsRenderer<'a> {
     pub registry: handlebars::Handlebars<'a>,
     pub tag_templates: HashMap<String, String>,
@@ -120,6 +134,9 @@ impl HandlebarsRenderer<'_> {
             let helper = vite_url { asset_source };
             self.registry.register_helper("vite_url", Box::new(helper));
         }
+
+        self.registry
+            .register_helper("term_url", Box::new(term_url_helper));
     }
 
     fn get_tag_name(value: &NodeValue) -> Option<String> {
@@ -321,6 +338,20 @@ mod tests {
             registry: reg,
             tag_templates: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn test_term_url_helper() {
+        let mut renderer = create_renderer();
+        renderer.register_helpers(&config::Config::default().resolve(std::path::Path::new(".")));
+        let data = serde_json::json!({"tags": ["Web Dev", 2024, "!!"]});
+
+        let result = renderer.render(
+            "{{#each tags}}[{{term_url \"tags\" this}}]{{/each}}[{{term_url \"tags\" missing}}]"
+                .to_string(),
+            data,
+        );
+        assert_eq!(result, "[/tags/web-dev/][/tags/2024/][][]");
     }
 
     #[test]

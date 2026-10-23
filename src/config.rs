@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -64,24 +65,6 @@ fn default_robots_enabled() -> bool {
     true
 }
 
-/// How page URLs map to files in the output directory.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UrlStyle {
-    /// `about` is written to `about.html` and linked as `/about`.
-    /// Requires a host that rewrites extensionless URLs (Netlify, Vercel, Cloudflare).
-    #[default]
-    Extensionless,
-    /// `about` is written to `about/index.html` and linked as `/about/`.
-    /// Works on any static host (S3, GitHub Pages, nginx defaults).
-    Directory,
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // signature required by serde's skip_serializing_if
-fn is_default_url_style(style: &UrlStyle) -> bool {
-    *style == UrlStyle::default()
-}
-
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Hooks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +98,29 @@ pub struct ViteBundler {
 pub struct Bundler {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vite: Option<ViteBundler>,
+}
+
+/// Paginated listing of a collection, configured under `[listings.<collection>]`.
+/// Rendered with `<pages_directory>/<collection>/list.hbs`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ListingConfig {
+    /// Items per page; all items go on a single page when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_page: Option<NonZeroUsize>,
+}
+
+/// Taxonomy built from the frontmatter key `<name>`, configured under
+/// `[taxonomies.<name>]`. Term pages are rendered with
+/// `<pages_directory>/<name>/term.hbs`, the optional index of all terms with
+/// `<pages_directory>/<name>/taxonomy.hbs`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TaxonomyConfig {
+    /// Items per term page; all items go on a single page when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_page: Option<NonZeroUsize>,
+    /// Collections whose items are classified; every collection when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -166,8 +172,10 @@ pub struct Config {
     pub sitemap: Option<SitemapConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub robots: Option<RobotsConfig>,
-    #[serde(default, skip_serializing_if = "is_default_url_style")]
-    pub url_style: UrlStyle,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub listings: HashMap<String, ListingConfig>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub taxonomies: HashMap<String, TaxonomyConfig>,
 }
 
 impl Default for Config {
@@ -186,7 +194,8 @@ impl Default for Config {
             base_url: None,
             sitemap: None,
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         }
     }
 }
@@ -209,7 +218,8 @@ impl Config {
             base_url: self.base_url.clone(),
             sitemap: self.sitemap.clone(),
             robots: self.robots.clone(),
-            url_style: self.url_style,
+            listings: self.listings.clone(),
+            taxonomies: self.taxonomies.clone(),
             dev_mode: false,
         }
     }
@@ -236,7 +246,8 @@ pub struct ResolvedConfig {
     pub base_url: Option<String>,
     pub sitemap: Option<SitemapConfig>,
     pub robots: Option<RobotsConfig>,
-    pub url_style: UrlStyle,
+    pub listings: HashMap<String, ListingConfig>,
+    pub taxonomies: HashMap<String, TaxonomyConfig>,
     pub dev_mode: bool,
 }
 
@@ -396,7 +407,8 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -417,7 +429,8 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -442,7 +455,8 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         };
 
         assert!(config.global.is_some());
@@ -473,7 +487,8 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         };
 
         assert_eq!(config.output_directory, "./build");
@@ -503,7 +518,8 @@ mod tests {
                 default_changefreq: Some("weekly".to_string()),
             }),
             robots: None,
-            url_style: UrlStyle::default(),
+            listings: HashMap::new(),
+            taxonomies: HashMap::new(),
         };
 
         assert_eq!(config.base_url, Some("https://example.com".to_string()));
@@ -578,7 +594,6 @@ mod tests {
                 default_priority: Some(0.8),
                 default_changefreq: None,
             }),
-            url_style: UrlStyle::default(),
             ..Default::default()
         };
 

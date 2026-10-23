@@ -4,11 +4,11 @@ use std::path::Path;
 use crate::config::{Config, CreateConfigError, InitFeature};
 use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
+use crate::listing::render_listing_pages;
 use crate::renderer::{HandlebarsRenderer, Renderer};
-use crate::sitemap::SitePages;
 use crate::{
-    add_assets, discover_collections, discover_static_pages, make_dist_folder,
-    render_collection_items, render_pages, write_robots, write_sitemap,
+    add_assets, discover_site_pages, make_dist_folder, render_collection_items, render_pages,
+    write_robots, write_sitemap,
 };
 
 pub fn init(path: &Path, features: &[InitFeature]) {
@@ -92,24 +92,13 @@ pub fn build(path: &Path) {
     log::info!("Created output directory (took {:?})", start.elapsed());
 
     let start = std::time::Instant::now();
-    let static_pages = match discover_static_pages(&resolved_config) {
+    let site_pages = match discover_site_pages(&resolved_config) {
         Ok(pages) => pages,
         Err(e) => {
-            log::error!("Error discovering static pages: {e}");
+            log::error!("Error discovering pages: {e}");
             std::process::exit(1);
         }
     };
-    let collection_pages = match discover_collections(&resolved_config) {
-        Ok(pages) => pages,
-        Err(e) => {
-            log::error!("Error discovering collections: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let mut site_pages = SitePages::new();
-    site_pages.add_pages(static_pages);
-    site_pages.add_pages(collection_pages);
     log::info!(
         "Discovered {} pages (took {:?})",
         site_pages.all().len(),
@@ -137,6 +126,16 @@ pub fn build(path: &Path) {
         }
     }
     log::info!("Rendered collections (took {:?})", start.elapsed());
+
+    let start = std::time::Instant::now();
+    match render_listing_pages(&resolved_config, site_pages.all(), &render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering listings: {e}");
+            std::process::exit(1);
+        }
+    }
+    log::info!("Rendered listings (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::RenderAfter);
 
