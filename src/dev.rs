@@ -634,6 +634,7 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
         || is_under(&change.path, &config.layouts_directory)
         || is_under(&change.path, &config.assets_directory)
         || is_under(&change.path, &config.tags_directory)
+        || is_under(&change.path, &config.helpers_directory)
     {
         return ChangePlan::FullReload;
     }
@@ -1218,6 +1219,7 @@ fn capture_snapshot(config: &ResolvedConfig) -> std::io::Result<Snapshot> {
         config.assets_directory.clone(),
         config.content_directory.clone(),
         config.tags_directory.clone(),
+        config.helpers_directory.clone(),
     ];
 
     for root in roots {
@@ -2238,6 +2240,55 @@ assets_directory = "./assets"
         assert!(
             snapshot.contains_key(&tag_file),
             "Snapshot should include tag template file"
+        );
+    }
+
+    #[test]
+    fn test_classify_script_helper_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.helpers_directory.join("shout.rhai"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    #[cfg(feature = "script-helpers")]
+    fn test_script_helper_change_rebuilds_pages() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("helpers")).unwrap();
+        fs::write(root.join("balzac.toml"), "").unwrap();
+        fs::write(root.join("pages/index.hbs"), "{{shout \"hi\"}}").unwrap();
+        fs::write(root.join("helpers/shout.rhai"), "params[0].to_upper()").unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "HI"
+        );
+
+        let snapshot = capture_snapshot(&session.resolved_config).unwrap();
+        fs::write(
+            root.join("helpers/shout.rhai"),
+            "params[0].to_upper() + \"!!!\"",
+        )
+        .unwrap();
+        let changes = diff_snapshots(
+            &snapshot,
+            &capture_snapshot(&session.resolved_config).unwrap(),
+        );
+        let messages = session.process_changes(&changes).unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "HI!!!"
         );
     }
 

@@ -74,7 +74,7 @@ Current behavior:
 
 - direct changes to page files in `pages/` (including nested ones like `pages/docs/intro.hbs`) trigger a targeted rebuild and reload only for that page, after checking the site for output conflicts; deleting a page removes its output and any output folders left empty. A full rebuild runs instead for the 404 page, a page that [shadows a collection item](#collections), and a deleted page whose output another page still writes (e.g. deleting `pages/docs/intro.hbs` while `pages/docs/intro.html` remains)
 - direct changes to markdown files in `content/<collection>/` (including nested folders) re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; generated pages that are no longer produced (deleted items, changed `slug`s, a tag with no posts left) are removed
-- changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection templates (`details.hbs` by default) trigger a full rebuild and full-page reload
+- changes to shared files such as `partials/`, `layouts/`, `assets/`, `helpers/`, `balzac.toml`, or collection templates (`details.hbs` by default) trigger a full rebuild and full-page reload
 - draft collection items (`draft: true`) are rendered
 - hooks are skipped unless you opt in with `dev = true` in `[hooks]` (see [Hooks in dev mode](#hooks-in-dev-mode))
 - a failed build (template, frontmatter or config error) does not stop the server: the error is logged and shown in an overlay in the browser until the next successful build, and any change made while the build is failing rebuilds the whole site. Only a `balzac.toml` that cannot be read or parsed when the server starts stops it, since the config says which directories to serve and watch
@@ -90,6 +90,7 @@ Balzac supports different directories that you are free to create or skip:
 - pages_directory (required): directory that stores all the handlebars templates that will be used to create pages
 - partials_directory (optional): houses all handlebars partials
 - layouts_directory (optional): houses all handlebars layouts
+- helpers_directory (optional): houses custom template helpers written in Rhai, see [Custom helpers](#custom-helpers)
 
 ### Static Pages
 
@@ -123,6 +124,7 @@ The build fails if two page files would write the same file, e.g. `pages/docs/in
 - assets_directory (optional): directory where static assets will reside
 - content_directory (optional): directory where content (markdown) will reside
 - tags_directory (optional): directory where markdown tag templates will reside, see [Tag templates](#tag-templates)
+- helpers_directory (optional): directory where custom helper scripts will reside (default: `./helpers`)
 - global: fill this array if you want to have global data available in all the templates and files
 - base_url (optional): the public URL of the site, used for the sitemap, robots.txt and the [`url_for` and `asset` helpers](#url_for)
 - sitemap (optional): see [Sitemap](#sitemap)
@@ -623,6 +625,36 @@ Besides `fm`, the details template receives:
 ```
 
 TOC links point to heading ids, so enable `heading_ids` (see below) or render ids in your own heading tag templates with `props.id`.
+
+## Custom helpers
+
+Define your own template helpers without recompiling Balzac by writing them in [Rhai](https://rhai.rs/book/), a small scripting language. Every `<name>.rhai` file in the helpers directory (`./helpers` by default, set `helpers_directory` to change it) registers a helper called `<name>`; other files are ignored.
+
+A script receives the helper arguments as the `params` array and the named arguments as the `hash` map, and the value of its last expression is the helper's result:
+
+```rhai
+// helpers/truncate.rhai
+let text = params[0];
+let length = if "length" in hash { hash.length } else { 80 };
+if text.len() <= length { text } else { text.sub_string(0, length) + "…" }
+```
+
+```hbs
+<p>{{truncate fm.description length=120}}</p>
+```
+
+A script can return any value, not just strings, so helpers also work as subexpressions, e.g. `{{#each (my_helper ...)}}` with a script returning an array. A script named like a built-in helper (`term_url`, `vite_url`, ...) replaces it.
+
+If a script doesn't compile, the build fails with an error naming the file and the position of the problem. Errors raised while a helper runs name both the template calling it and the script:
+
+```txt
+invalid helper script helpers/truncate.rhai: Expecting ';' to terminate this statement (line 4, position 1)
+template error in pages/index.hbs:1:4: helper `truncate` (helpers/truncate.rhai) failed: Function not found: nope (&str | ImmutableString | String) (line 1, position 11)
+```
+
+`balzac dev` rebuilds the whole site when a helper changes.
+
+Script helpers are part of the default `script-helpers` cargo feature, which adds about 2 MiB to the binary. To build Balzac without them, use `cargo install balzac --no-default-features`; the helpers directory is then ignored with a warning.
 
 ## Markdown
 
