@@ -11,13 +11,13 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 
 use crate::config::{Config, ResolvedConfig};
+use crate::context::build_collections_context;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
 use crate::{
-    add_assets, collection_entry_from_source, collection_output_path_from_source,
-    discover_collections, discover_static_pages, is_supported_page_file, make_dist_folder,
-    remove_output_for_source, render_collection_items, render_collection_page, render_pages,
-    render_static_page, static_page_entry_from_source, write_sitemap,
+    add_assets, collection_output_path_from_source, discover_collections, discover_static_pages,
+    is_supported_page_file, make_dist_folder, remove_output_for_source, render_collection_items,
+    render_pages, render_static_page, static_page_entry_from_source, write_sitemap,
 };
 
 const SSE_ENDPOINT: &str = "/__balzac/events";
@@ -121,9 +121,24 @@ impl DevSession {
                 Ok(vec![ReloadMessage::full()])
             }
             ChangePlan::Targeted(targets) => {
+                // Every page can list collection items, so a collection change
+                // re-renders the whole site instead of a single page.
+                if targets
+                    .iter()
+                    .any(|target| target.kind == TargetKind::CollectionItem)
+                {
+                    for target in &targets {
+                        if target.change_type == ChangeType::Deleted {
+                            remove_output_for_source(&self.resolved_config, &target.source_path)?;
+                        }
+                    }
+                    self.render_site()?;
+                    return Ok(vec![ReloadMessage::full()]);
+                }
+
                 let mut messages = Vec::new();
                 for target in targets {
-                    if let Some(message) = self.handle_targeted_change(&target)? {
+                    if let Some(message) = self.handle_static_page_change(&target)? {
                         messages.push(message);
                     }
                 }
@@ -135,7 +150,7 @@ impl DevSession {
         }
     }
 
-    fn handle_targeted_change(
+    fn handle_static_page_change(
         &self,
         target: &TargetedChange,
     ) -> std::io::Result<Option<ReloadMessage>> {
@@ -145,31 +160,16 @@ impl DevSession {
                 Ok(Some(ReloadMessage::targeted(&target.url_path)))
             }
             ChangeType::Created | ChangeType::Modified => {
+                let Some(page) =
+                    static_page_entry_from_source(&self.resolved_config, &target.source_path)
+                else {
+                    return Ok(None);
+                };
                 let renderer = self.create_renderer();
-                match target.kind {
-                    TargetKind::StaticPage => {
-                        if let Some(page) = static_page_entry_from_source(
-                            &self.resolved_config,
-                            &target.source_path,
-                        ) {
-                            render_static_page(&self.resolved_config, &page, &renderer)?;
-                            Ok(Some(ReloadMessage::targeted(&target.url_path)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    TargetKind::CollectionItem => {
-                        let Some(page) = collection_entry_from_source(
-                            &self.resolved_config,
-                            &target.source_path,
-                        )?
-                        else {
-                            return Ok(None);
-                        };
-                        render_collection_page(&self.resolved_config, &page, &renderer)?;
-                        Ok(Some(ReloadMessage::targeted(&target.url_path)))
-                    }
-                }
+                let collection_pages = discover_collections(&self.resolved_config)?;
+                let collections = build_collections_context(&collection_pages, &renderer)?;
+                render_static_page(&self.resolved_config, &page, &renderer, &collections)?;
+                Ok(Some(ReloadMessage::targeted(&target.url_path)))
             }
         }
     }
@@ -183,6 +183,12 @@ impl DevSession {
 
     fn build_current_config(&self) -> std::io::Result<()> {
         make_dist_folder(&self.resolved_config)?;
+        self.render_site()?;
+        add_assets(&self.resolved_config)?;
+        Ok(())
+    }
+
+    fn render_site(&self) -> std::io::Result<()> {
         let renderer = self.create_renderer();
         let static_pages = discover_static_pages(&self.resolved_config)?;
         let collection_pages = discover_collections(&self.resolved_config)?;
@@ -193,9 +199,7 @@ impl DevSession {
 
         render_pages(&self.resolved_config, site_pages.all(), &renderer)?;
         render_collection_items(&self.resolved_config, site_pages.all(), &renderer)?;
-        write_sitemap(&self.resolved_config, &site_pages)?;
-        add_assets(&self.resolved_config)?;
-        Ok(())
+        write_sitemap(&self.resolved_config, &site_pages)
     }
 
     fn refresh_sitemap(&self) -> std::io::Result<()> {
@@ -1020,10 +1024,123 @@ content_directory = "./content"
             }])
             .unwrap();
 
-        assert_eq!(messages, vec![ReloadMessage::targeted("/posts/post-1")]);
+        assert_eq!(messages, vec![ReloadMessage::full()]);
         let rendered = fs::read_to_string(root.join("dist/posts/post-1.html")).unwrap();
         assert!(rendered.contains("First Updated"));
         assert!(rendered.contains("<p>Two</p>"));
+    }
+
+    #[test]
+    fn test_process_changes_rerenders_pages_listing_collections() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages/posts")).unwrap();
+        fs::create_dir_all(root.join("content/posts")).unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+content_directory = "./content"
+assets_directory = "./assets"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("assets/style.css"), "body {}").unwrap();
+        fs::write(
+            root.join("pages/index.hbs"),
+            "{{#each collections.posts}}[{{fm.title}}]{{/each}}",
+        )
+        .unwrap();
+        fs::write(
+            root.join("pages/posts/details.hbs"),
+            "{{#each collections.posts}}<{{slug}}>{{/each}}",
+        )
+        .unwrap();
+        fs::write(root.join("content/posts/a.md"), "---\ntitle: A\n---\n").unwrap();
+        fs::write(root.join("content/posts/b.md"), "---\ntitle: B\n---\n").unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "[A][B]"
+        );
+
+        fs::write(root.join("content/posts/a.md"), "---\ntitle: A2\n---\n").unwrap();
+        fs::remove_file(root.join("content/posts/b.md")).unwrap();
+        let messages = session
+            .process_changes(&[
+                SourceChange {
+                    path: root.join("content/posts/a.md"),
+                    change_type: ChangeType::Modified,
+                    is_dir: false,
+                },
+                SourceChange {
+                    path: root.join("content/posts/b.md"),
+                    change_type: ChangeType::Deleted,
+                    is_dir: false,
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "[A2]"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/a.html")).unwrap(),
+            "<a>"
+        );
+        assert!(!root.join("dist/posts/b.html").exists());
+        assert!(
+            root.join("dist/assets/style.css").exists(),
+            "Collection changes should not wipe the output directory"
+        );
+    }
+
+    #[test]
+    fn test_process_changes_static_page_sees_collections() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages/posts")).unwrap();
+        fs::create_dir_all(root.join("content/posts")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+content_directory = "./content"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/posts/details.hbs"), "{{fm.title}}").unwrap();
+        fs::write(root.join("content/posts/a.md"), "---\ntitle: A\n---\n").unwrap();
+        fs::write(root.join("pages/index.hbs"), "v1").unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::write(
+            root.join("pages/index.hbs"),
+            "{{#each collections.posts}}{{url}}{{/each}}",
+        )
+        .unwrap();
+        let messages = session
+            .process_changes(&[SourceChange {
+                path: root.join("pages/index.hbs"),
+                change_type: ChangeType::Modified,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::targeted("/")]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "/posts/a"
+        );
     }
 
     #[test]

@@ -885,3 +885,96 @@ fn test_custom_tag_renderer_for_links() {
         "Link text should be preserved: {output_content}"
     );
 }
+
+#[test]
+fn test_collections_available_in_static_and_details_pages() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        layouts_dir,
+        partials_dir,
+        assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    let posts_pages_dir = pages_dir.join("posts");
+    let posts_content_dir = content_dir.join("posts");
+    fs::create_dir(&posts_pages_dir).expect("Failed to create posts pages dir");
+    fs::create_dir_all(&posts_content_dir).expect("Failed to create posts content dir");
+
+    fs::write(
+        pages_dir.join("index.hbs"),
+        "<h1>{{site_name}}</h1><ul>{{#each collections.posts}}<li><a href=\"{{url}}\">{{fm.title}}</a>{{{content}}}</li>{{/each}}</ul>",
+    )
+    .expect("Failed to write index");
+    fs::write(
+        posts_pages_dir.join("details.hbs"),
+        "<h1>{{fm.title}}</h1>{{#each collections.posts}}[{{slug}}]{{/each}}",
+    )
+    .expect("Failed to write details template");
+
+    // Unquoted YAML dates must still sort newest first
+    fs::write(
+        posts_content_dir.join("older.md"),
+        "---\ntitle: Older\ndate: 2024-01-15\n---\n\nOld body",
+    )
+    .expect("Failed to write older post");
+    fs::write(
+        posts_content_dir.join("newer.md"),
+        "---\ntitle: Newer\ndate: 2025-03-02\n---\n\nNew body",
+    )
+    .expect("Failed to write newer post");
+    fs::write(
+        posts_content_dir.join("undated.md"),
+        "---\ntitle: Undated\n---\n\nNo date",
+    )
+    .expect("Failed to write undated post");
+
+    let mut global = std::collections::HashMap::new();
+    global.insert("site_name".to_string(), serde_json::json!("My Blog"));
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        assets_directory: assets_dir.to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
+        global: Some(global),
+        hooks: None,
+        bundler: None,
+        base_url: None,
+        sitemap: None,
+    };
+
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages
+        .add_pages(discover_static_pages(&resolved_config).expect("Failed to discover pages"));
+    site_pages
+        .add_pages(discover_collections(&resolved_config).expect("Failed to discover collections"));
+
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    render_pages(&resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
+    render_collection_items(&resolved_config, site_pages.all(), &renderer)
+        .expect("Failed to render collections");
+
+    let index = fs::read_to_string(output_dir.join("index.html")).expect("Failed to read index");
+    assert_eq!(
+        index,
+        "<h1>My Blog</h1><ul>\
+         <li><a href=\"/posts/newer\">Newer</a><p>New body</p>\n</li>\
+         <li><a href=\"/posts/older\">Older</a><p>Old body</p>\n</li>\
+         <li><a href=\"/posts/undated\">Undated</a><p>No date</p>\n</li>\
+         </ul>"
+    );
+
+    let details =
+        fs::read_to_string(output_dir.join("posts/older.html")).expect("Failed to read details");
+    assert_eq!(details, "<h1>Older</h1>[newer][older][undated]");
+}

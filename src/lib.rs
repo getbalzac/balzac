@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    context::merge_contexts,
+    context::{build_collections_context, merge_contexts},
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
 };
@@ -198,12 +198,14 @@ pub fn render_pages(
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
 ) -> std::io::Result<()> {
+    let collections = build_collections_context(pages, render)?;
+
     for page in pages {
         if !matches!(page.page_type, PageType::Static) {
             continue;
         }
 
-        render_static_page(parsed_config, page, render)?;
+        render_static_page(parsed_config, page, render, &collections)?;
     }
 
     Ok(())
@@ -214,6 +216,7 @@ pub fn render_collection_items(
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
 ) -> std::io::Result<()> {
+    let collections = build_collections_context(pages, render)?;
     let mut created_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for page in pages {
@@ -233,7 +236,7 @@ pub fn render_collection_items(
             log::info!("Rendering collection {collection_name}");
         }
 
-        render_collection_page(parsed_config, page, render)?;
+        render_collection_page(parsed_config, page, render, &collections)?;
     }
 
     Ok(())
@@ -370,6 +373,7 @@ pub fn render_static_page(
     parsed_config: &config::ResolvedConfig,
     page: &PageEntry,
     render: &HandlebarsRenderer,
+    collections: &serde_json::Value,
 ) -> std::io::Result<()> {
     log::info!(
         "Rendering page {}",
@@ -380,7 +384,13 @@ pub fn render_static_page(
     );
 
     let content = fs::read_to_string(&page.source_path)?;
-    let rendered = render.render(content, serde_json::json!(&parsed_config.global));
+    let rendered = render.render(
+        content,
+        merge_contexts(
+            parsed_config,
+            &serde_json::json!({"collections": collections}),
+        ),
+    );
     fs::write(&page.output_path, rendered)?;
     Ok(())
 }
@@ -389,6 +399,7 @@ pub fn render_collection_page(
     parsed_config: &config::ResolvedConfig,
     page: &PageEntry,
     render: &HandlebarsRenderer,
+    collections: &serde_json::Value,
 ) -> std::io::Result<()> {
     let collection_name = match &page.page_type {
         PageType::Collection { name } => name,
@@ -426,7 +437,11 @@ pub fn render_collection_page(
         fs::read_to_string(&details_page_path)?,
         merge_contexts(
             parsed_config,
-            &serde_json::json!({"content": html_content, "fm": frontmatter}),
+            &serde_json::json!({
+                "content": html_content,
+                "fm": frontmatter,
+                "collections": collections,
+            }),
         ),
     );
 
