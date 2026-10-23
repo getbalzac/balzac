@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.11] - 2026-10-23
+
+### 🚀 Features
+
+- Expose collections to page templates
+- Add 404 page support and robots.txt generation
+- Add url_style option for directory-style clean URLs
+- Add paginated listings and taxonomy pages
+- Syntax highlighting, heading ids, toc, footnotes and excerpts for markdown
+
+### 🐛 Bug Fixes
+
+- Copy assets directory recursively
+
+### 📚 Documentation
+
+- Document markdown options, toc and excerpt
+
+### ⚡ Performance
+
+- Compare borrowed strings when sorting collection items
+
+### ⚙️ Miscellaneous Tasks
+
+- Set up janitor PR reviews
+- Enforce stricter clippy lints
+- Regenerate janitor workflow for v2.1.0
 ## [0.1.10] - 2026-06-04
 
 ### 🚀 Features
