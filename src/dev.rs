@@ -15,9 +15,10 @@ use crate::context::build_collections_context;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
 use crate::{
-    add_assets, collection_output_path_from_source, discover_collections, discover_static_pages,
-    is_supported_page_file, make_dist_folder, remove_output_for_source, render_collection_items,
-    render_pages, render_static_page, static_page_entry_from_source, write_sitemap,
+    NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_output_path_from_source,
+    discover_collections, discover_static_pages, is_supported_page_file, make_dist_folder,
+    remove_output_for_source, render_collection_items, render_pages, render_static_page,
+    static_page_entry_from_source, write_robots, write_sitemap,
 };
 
 const SSE_ENDPOINT: &str = "/__balzac/events";
@@ -184,6 +185,7 @@ impl DevSession {
     fn build_current_config(&self) -> std::io::Result<()> {
         make_dist_folder(&self.resolved_config)?;
         self.render_site()?;
+        write_robots(&self.resolved_config)?;
         add_assets(&self.resolved_config)?;
         Ok(())
     }
@@ -305,7 +307,8 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
     if change.is_dir {
         return ChangePlan::FullReload;
     }
-    if is_under(&change.path, &config.partials_directory)
+    if change.path == config.pages_directory.join(ROBOTS_FILE)
+        || is_under(&change.path, &config.partials_directory)
         || is_under(&change.path, &config.layouts_directory)
         || is_under(&change.path, &config.assets_directory)
         || is_under(&change.path, &config.tags_directory)
@@ -318,6 +321,10 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
             let Some(page) = static_page_entry_from_source(config, &change.path) else {
                 return ChangePlan::None;
             };
+            if change.path.file_stem().is_some_and(|stem| stem == "404") {
+                // the 404 page is shown for arbitrary missing URLs, so a targeted reload can't reach it
+                return ChangePlan::FullReload;
+            }
             return ChangePlan::Targeted(vec![TargetedChange {
                 kind: TargetKind::StaticPage,
                 source_path: change.path.clone(),
@@ -496,30 +503,58 @@ fn handle_connection(
     let config_guard = config
         .read()
         .expect("dev config lock should not be poisoned");
-    let Some(file_path) = resolve_output_path(&config_guard.output_directory, &path) else {
-        return write_response(
-            stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            b"Not Found",
-            false,
-        );
-    };
-
-    let content_type = content_type_for_path(&file_path);
-    let mut body = fs::read(&file_path)?;
-    if is_html_path(&file_path) {
-        let html = String::from_utf8_lossy(&body);
-        body = inject_dev_scripts(&html, &config_guard).into_bytes();
-    }
-
+    let response = build_file_response(&config_guard, &path)?;
     write_response(
         stream,
-        "200 OK",
-        content_type,
-        &body,
+        response.status,
+        response.content_type,
+        &response.body,
         should_include_response_body(&method),
     )
+}
+
+struct FileResponse {
+    status: &'static str,
+    content_type: &'static str,
+    body: Vec<u8>,
+}
+
+fn build_file_response(
+    config: &ResolvedConfig,
+    request_path: &str,
+) -> std::io::Result<FileResponse> {
+    if let Some(file_path) = resolve_output_path(&config.output_directory, request_path) {
+        return Ok(FileResponse {
+            status: "200 OK",
+            content_type: content_type_for_path(&file_path),
+            body: read_output_file(&file_path, config)?,
+        });
+    }
+
+    // mirror static hosts: serve the site's own 404 page when there is one
+    let not_found_page = config.output_directory.join(NOT_FOUND_PAGE);
+    if not_found_page.is_file() {
+        return Ok(FileResponse {
+            status: "404 Not Found",
+            content_type: content_type_for_path(&not_found_page),
+            body: read_output_file(&not_found_page, config)?,
+        });
+    }
+
+    Ok(FileResponse {
+        status: "404 Not Found",
+        content_type: "text/plain; charset=utf-8",
+        body: b"Not Found".to_vec(),
+    })
+}
+
+fn read_output_file(file_path: &Path, config: &ResolvedConfig) -> std::io::Result<Vec<u8>> {
+    let body = fs::read(file_path)?;
+    if is_html_path(file_path) {
+        let html = String::from_utf8_lossy(&body);
+        return Ok(inject_dev_scripts(&html, config).into_bytes());
+    }
+    Ok(body)
 }
 
 fn read_request(stream: &TcpStream) -> std::io::Result<(String, String)> {
@@ -649,6 +684,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
         Some("json") => "application/json; charset=utf-8",
         Some("svg") => "image/svg+xml",
         Some("xml") => "application/xml; charset=utf-8",
+        Some("txt") => "text/plain; charset=utf-8",
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
@@ -930,6 +966,76 @@ mod tests {
 
         let path = resolve_output_path(&config.output_directory, "/about").unwrap();
         assert_eq!(path, config.output_directory.join("about.html"));
+    }
+
+    #[test]
+    fn test_missing_path_serves_custom_404_page() {
+        let (_temp_dir, config) = setup_dev_project();
+        fs::create_dir_all(&config.output_directory).unwrap();
+        fs::write(
+            config.output_directory.join(NOT_FOUND_PAGE),
+            "<html><body><h1>Lost</h1></body></html>",
+        )
+        .unwrap();
+
+        let response = build_file_response(&config, "/does-not-exist").unwrap();
+        assert_eq!(response.status, "404 Not Found");
+        assert_eq!(response.content_type, "text/html; charset=utf-8");
+        let body = String::from_utf8(response.body).unwrap();
+        assert!(body.contains("<h1>Lost</h1>"));
+        assert!(body.contains(SSE_ENDPOINT));
+    }
+
+    #[test]
+    fn test_missing_path_without_404_page_serves_plain_text() {
+        let (_temp_dir, config) = setup_dev_project();
+        fs::create_dir_all(&config.output_directory).unwrap();
+
+        let response = build_file_response(&config, "/does-not-exist").unwrap();
+        assert_eq!(response.status, "404 Not Found");
+        assert_eq!(response.content_type, "text/plain; charset=utf-8");
+        assert_eq!(response.body, b"Not Found");
+    }
+
+    #[test]
+    fn test_existing_path_is_served_with_ok_status() {
+        let (_temp_dir, config) = setup_dev_project();
+        fs::create_dir_all(&config.output_directory).unwrap();
+        fs::write(
+            config.output_directory.join(NOT_FOUND_PAGE),
+            "<h1>Lost</h1>",
+        )
+        .unwrap();
+        fs::write(config.output_directory.join(ROBOTS_FILE), "User-agent: *\n").unwrap();
+
+        let response = build_file_response(&config, "/robots.txt").unwrap();
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "text/plain; charset=utf-8");
+        assert_eq!(response.body, b"User-agent: *\n");
+    }
+
+    #[test]
+    fn test_classify_404_page_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.pages_directory.join("404.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_classify_user_robots_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.pages_directory.join(ROBOTS_FILE),
+            change_type: ChangeType::Created,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
     }
 
     #[test]
