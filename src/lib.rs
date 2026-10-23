@@ -50,34 +50,51 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
     let dir_exists = fs::exists(&parsed_config.assets_directory)?;
 
     if dir_exists {
-        fs::create_dir(parsed_config.output_directory.join("assets"))?;
-        for entry in fs::read_dir(&parsed_config.assets_directory)? {
-            let dir = entry?;
-
-            let is_directory = dir.metadata()?.is_dir();
-            if is_directory {
-                log::debug!(
-                    "entry {} is a directory, skipping",
-                    dir.file_name().to_string_lossy()
-                );
-                continue;
-            }
-
-            let path = parsed_config
-                .output_directory
-                .join("assets")
-                .join(dir.file_name());
-            log::debug!(
-                "Copying {} to {}",
-                dir.file_name().to_string_lossy(),
-                path.display()
-            );
-            fs::copy(dir.path(), path)?;
-        }
+        // The output directory may live inside the assets directory; never copy it into itself.
+        // Create it first so it can always be canonicalized and matched during the walk.
+        let destination = parsed_config.output_directory.join("assets");
+        fs::create_dir_all(&destination)?;
+        let output_directory = fs::canonicalize(&parsed_config.output_directory)?;
+        copy_dir_recursive(
+            &parsed_config.assets_directory,
+            &destination,
+            &output_directory,
+        )?;
     } else {
         log::debug!("Assets directory does not exist, skipping");
     }
 
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+
+        if entry.file_type()?.is_dir() {
+            if fs::canonicalize(entry.path())? == excluded {
+                log::debug!("Skipping output directory {}", entry.path().display());
+                continue;
+            }
+            copy_dir_recursive(&entry.path(), &target, excluded)?;
+            continue;
+        }
+
+        // `is_file` follows symlinks: links to regular files are copied, while directory and
+        // dangling links, FIFOs, sockets and devices are skipped so they can't fail or hang the copy.
+        if !entry.path().is_file() {
+            log::warn!(
+                "Skipping asset {} (not a regular file)",
+                entry.path().display()
+            );
+            continue;
+        }
+
+        log::debug!("Copying {} to {}", entry.path().display(), target.display());
+        fs::copy(entry.path(), target)?;
+    }
     Ok(())
 }
 

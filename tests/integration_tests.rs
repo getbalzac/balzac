@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use balzac::config::{Config, RobotsConfig, SitemapConfig};
 use balzac::listing::render_listing_pages;
 use balzac::{
-    discover_collections, discover_site_pages, discover_static_pages, make_dist_folder,
+    add_assets, discover_collections, discover_site_pages, discover_static_pages, make_dist_folder,
     render_collection_items, render_pages, write_robots, write_sitemap,
 };
 
@@ -1435,4 +1435,150 @@ fn test_unknown_highlight_theme_is_an_error() {
     let error = balzac::markdown::write_highlight_css(&resolved_config)
         .expect_err("Unknown theme should fail");
     assert!(error.to_string().contains("InspiredGitHub"), "got: {error}");
+}
+
+#[test]
+fn test_add_assets_copies_nested_directories() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        layouts_dir,
+        partials_dir,
+        assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    fs::create_dir_all(assets_dir.join("img/icons")).expect("Failed to create assets dirs");
+    fs::create_dir_all(assets_dir.join("empty")).expect("Failed to create empty dir");
+    fs::write(assets_dir.join("style.css"), "body {}").expect("Failed to write css");
+    fs::write(assets_dir.join("img/logo.png"), [0x89, 0x50, 0x4e, 0x47])
+        .expect("Failed to write logo");
+    fs::write(assets_dir.join("img/icons/star.svg"), "<svg/>").expect("Failed to write icon");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        assets_directory: assets_dir.to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
+        ..Config::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+
+    make_dist_folder(&resolved_config).expect("Failed to create dist folder");
+    add_assets(&resolved_config).expect("Failed to copy assets");
+
+    let dist_assets = output_dir.join("assets");
+    assert_eq!(
+        fs::read_to_string(dist_assets.join("style.css")).unwrap(),
+        "body {}"
+    );
+    assert_eq!(
+        fs::read(dist_assets.join("img/logo.png")).unwrap(),
+        vec![0x89, 0x50, 0x4e, 0x47]
+    );
+    assert_eq!(
+        fs::read_to_string(dist_assets.join("img/icons/star.svg")).unwrap(),
+        "<svg/>"
+    );
+    assert!(dist_assets.join("empty").is_dir());
+}
+
+fn assets_config(
+    temp_path: &std::path::Path,
+    output_directory: &str,
+) -> balzac::config::ResolvedConfig {
+    Config {
+        output_directory: output_directory.to_string(),
+        pages_directory: "./pages".to_string(),
+        layouts_directory: "./layouts".to_string(),
+        partials_directory: "./partials".to_string(),
+        assets_directory: "./assets".to_string(),
+        content_directory: "./content".to_string(),
+        tags_directory: "./tags".to_string(),
+        ..Config::default()
+    }
+    .resolve(temp_path)
+}
+
+#[test]
+fn test_add_assets_skips_output_directory_inside_assets() {
+    let (_temp, temp_path, _, _, _, _, assets_dir, _) = setup_test_project();
+    fs::create_dir_all(assets_dir.join("img")).expect("Failed to create assets dirs");
+    fs::write(assets_dir.join("img/logo.png"), "logo").expect("Failed to write logo");
+
+    let resolved_config = assets_config(&temp_path, "./assets/dist");
+    make_dist_folder(&resolved_config).expect("Failed to create dist folder");
+    add_assets(&resolved_config).expect("Failed to copy assets");
+
+    let dist_assets = assets_dir.join("dist/assets");
+    assert_eq!(
+        fs::read_to_string(dist_assets.join("img/logo.png")).unwrap(),
+        "logo"
+    );
+    assert!(
+        !dist_assets.join("dist").exists(),
+        "Output directory should not be copied into itself"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_add_assets_skips_entries_that_are_not_regular_files() {
+    let (_temp, temp_path, _, output_dir, _, _, assets_dir, _) = setup_test_project();
+    let shared_dir = temp_path.join("shared");
+    fs::create_dir_all(&shared_dir).expect("Failed to create shared dir");
+    fs::create_dir_all(&assets_dir).expect("Failed to create assets dir");
+    fs::write(shared_dir.join("font.woff2"), "font").expect("Failed to write font");
+    fs::write(assets_dir.join("style.css"), "body {}").expect("Failed to write css");
+    std::os::unix::fs::symlink(&shared_dir, assets_dir.join("shared"))
+        .expect("Failed to create dir symlink");
+    std::os::unix::fs::symlink(assets_dir.join("style.css"), assets_dir.join("alias.css"))
+        .expect("Failed to create file symlink");
+    std::os::unix::fs::symlink(
+        temp_path.join("missing.png"),
+        assets_dir.join("dangling.png"),
+    )
+    .expect("Failed to create dangling symlink");
+    let _socket = std::os::unix::net::UnixListener::bind(assets_dir.join("dev.sock"))
+        .expect("Failed to create socket");
+
+    let resolved_config = assets_config(&temp_path, "./dist");
+    make_dist_folder(&resolved_config).expect("Failed to create dist folder");
+    add_assets(&resolved_config).expect(
+        "Symlinked directories, dangling links and special files should not fail the build",
+    );
+
+    let dist_assets = output_dir.join("assets");
+    assert_eq!(
+        fs::read_to_string(dist_assets.join("alias.css")).unwrap(),
+        "body {}"
+    );
+    assert!(!dist_assets.join("shared").exists());
+    assert!(!dist_assets.join("dangling.png").exists());
+    assert!(!dist_assets.join("dev.sock").exists());
+}
+
+#[test]
+fn test_add_assets_skips_output_directory_inside_assets_before_it_exists() {
+    let (_temp, temp_path, _, _, _, _, assets_dir, _) = setup_test_project();
+    fs::create_dir_all(&assets_dir).expect("Failed to create assets dir");
+    fs::write(assets_dir.join("style.css"), "body {}").expect("Failed to write css");
+
+    let resolved_config = assets_config(&temp_path, "./assets/dist");
+    add_assets(&resolved_config).expect("Failed to copy assets");
+
+    let dist_assets = assets_dir.join("dist/assets");
+    assert_eq!(
+        fs::read_to_string(dist_assets.join("style.css")).unwrap(),
+        "body {}"
+    );
+    assert!(
+        !dist_assets.join("dist").exists(),
+        "Output directory should not be copied into itself"
+    );
 }
