@@ -75,7 +75,7 @@ Current behavior:
 - direct changes to page files in `pages/` (including nested ones like `pages/docs/intro.hbs`) trigger a targeted rebuild and reload only for that page, after checking the site for output conflicts; deleting a page removes its output and any output folders left empty. A full rebuild runs instead for the 404 page, a page that [shadows a collection item](#collections), and a deleted page whose output another page still writes (e.g. deleting `pages/docs/intro.hbs` while `pages/docs/intro.html` remains)
 - direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; listing pages that are no longer generated (e.g. a tag with no posts left) are removed
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
-- hooks are ignored in dev mode
+- hooks are skipped unless you opt in with `dev = true` in `[hooks]` (see [Hooks in dev mode](#hooks-in-dev-mode))
 - a failed build (template, frontmatter or config error) does not stop the server: the error is logged and shown in an overlay in the browser until the next successful build, and any change made while the build is failing rebuilds the whole site. Only a `balzac.toml` that cannot be read or parsed when the server starts stops it, since the config says which directories to serve and watch
 - missing paths are answered with a `404` status and your `404.html` page if you have one (see [404 Page](#404-page)), otherwise plain text
 
@@ -334,8 +334,25 @@ build_after = "rsync -av dist/ production/"
 - If a hook fails (exits with non-zero status), the entire build process will terminate
 - Hook execution time is logged for each hook
 - All hooks support full shell command syntax with arguments
-- Hooks run during `balzac build`
-- Hooks are intentionally skipped during `balzac dev`
+- Hooks run during `balzac build`, and during `balzac dev` only when `dev = true` (see below)
+
+### Hooks in dev mode
+
+Hooks are skipped by `balzac dev` unless you opt in, so a `build_after` that deploys does not run on every save:
+
+```toml
+[hooks]
+dev = true
+render_init_before = "pnpm build"
+```
+
+With `dev = true`:
+
+- the initial dev build and every full rebuild (shared files such as `partials/`, `layouts/`, `assets/` or `balzac.toml` changed) run all hooks, in the same order as `balzac build`
+- targeted rebuilds (a page in `pages/` or markdown in `content/` changed) run only `render_before` and `render_after`
+- a failing hook aborts the build it runs in, like any other build error: the error is logged and shown in the browser overlay, the server keeps running (also when the initial build fails), and the next change rebuilds the whole site, hooks included. The previous output is left untouched only if the hook failed before anything was written (`render_init_*` and `build_before`, or `render_before` in a targeted rebuild); a later failure can leave changed or partial output (a full rebuild recreates the output directory before `render_before`) until the next successful build
+- hooks run synchronously and block the rebuild. Files they write into watched directories (e.g. `assets/`) are applied right after it in one extra pass with hooks paused, which updates the output in place: it re-renders the site and copies only the changed assets, keeping files hooks such as `build_after` wrote there (if a hook edits `balzac.toml`, that pass is a regular full rebuild instead), so they reach the output without triggering the hooks again
+- long-running commands such as `vite` or `tailwindcss --watch` should not be hooks: run them alongside `balzac dev` instead
 
 ## Collections
 

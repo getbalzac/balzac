@@ -269,9 +269,12 @@ fn default_feed_limit() -> usize {
     20
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
+    /// Also run the hooks in `balzac dev` (off by default)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dev: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_before: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

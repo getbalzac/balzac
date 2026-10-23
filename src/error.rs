@@ -34,6 +34,9 @@ pub enum Error {
 
     #[error("{0}")]
     Vite(String),
+
+    #[error(transparent)]
+    Hook(#[from] crate::hooks::HookError),
 }
 
 impl Error {
