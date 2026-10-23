@@ -3,7 +3,9 @@
 //!
 //! Every generated URL is built by the helpers in this module (`section_url`,
 //! `paginated_url`, `term_url`, `output_path_for_url`), so the URL scheme can
-//! be changed in one place.
+//! be changed in one place. Listing URLs are directory-shaped (`/posts/page/2/`
+//! -> `posts/page/2/index.html`) whatever the `url_style`, since they name
+//! sections rather than single pages.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -280,7 +282,9 @@ fn listing_entry(config: &ResolvedConfig, template: &Path, listing: ListingPage)
 
 /// Plans the listing and taxonomy pages configured in `balzac.toml` from the
 /// discovered collection items in `pages`. Listings whose template is missing
-/// are skipped with a warning.
+/// are skipped with a warning. Fails if a listing would be written to the
+/// output file of another listing or of any page in `pages` (e.g. a
+/// directory-style `pages/posts.hbs` and the `/posts/` listing).
 pub fn discover_listings(
     config: &ResolvedConfig,
     pages: &[PageEntry],
@@ -340,7 +344,7 @@ pub fn discover_listings(
         )?);
     }
 
-    let mut outputs: HashMap<&Path, &str> = items
+    let mut outputs: HashMap<&Path, &str> = pages
         .iter()
         .map(|item| (item.output_path.as_path(), item.url_path.as_str()))
         .collect();
@@ -508,7 +512,7 @@ pub fn render_listing_pages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ListingConfig, TaxonomyConfig};
+    use crate::config::{Config, ListingConfig, TaxonomyConfig, UrlStyle};
     use tempfile::TempDir;
 
     fn item(collection: &str, slug: &str, fm: Value) -> PageEntry {
@@ -706,6 +710,25 @@ mod tests {
         index.output_path = config.output_directory.join("posts/index.html");
 
         assert!(discover_listings(&config, &[index]).is_err());
+    }
+
+    #[test]
+    fn test_discover_listing_conflicting_with_directory_style_static_page() {
+        let (_temp, mut config) = setup(&["posts/list.hbs", "posts.hbs"]);
+        config
+            .listings
+            .insert("posts".to_string(), ListingConfig::default());
+        let static_page = |config: &ResolvedConfig| {
+            crate::static_page_entry_from_source(config, &config.pages_directory.join("posts.hbs"))
+                .unwrap()
+        };
+
+        // `posts.html` and `posts/index.html` coexist.
+        assert!(discover_listings(&config, &[static_page(&config)]).is_ok());
+
+        // Both `pages/posts.hbs` and the listing would write `posts/index.html`.
+        config.url_style = UrlStyle::Directory;
+        assert!(discover_listings(&config, &[static_page(&config)]).is_err());
     }
 
     #[test]

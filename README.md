@@ -98,6 +98,28 @@ Balzac supports different directories that you are free to create or skip:
 - listings (optional): paginated collection listings, see [Listings and pagination](#listings-and-pagination)
 - taxonomies (optional): tag/category pages, see [Taxonomies](#taxonomies)
 - markdown (optional): markdown rendering options, see [Markdown](#markdown)
+- url_style (optional): how page URLs map to output files, see [URL Style](#url-style)
+
+### URL Style
+
+`url_style` controls where pages are written and which URLs are used for them (including in the sitemap and the dev server).
+
+| `url_style`               | `pages/about.hbs`        | `content/posts/foo.md`       |
+| ------------------------- | ------------------------ | ---------------------------- |
+| `"extensionless"` (default) | `dist/about.html` → `/about` | `dist/posts/foo.html` → `/posts/foo` |
+| `"directory"`             | `dist/about/index.html` → `/about/` | `dist/posts/foo/index.html` → `/posts/foo/` |
+
+```toml
+url_style = "directory"
+```
+
+- `extensionless` needs a host that serves `about.html` for `/about` (Netlify, Vercel, Cloudflare Pages).
+- `directory` works on any static host (S3, GitHub Pages, nginx defaults).
+- `pages/index.hbs` is always written to `dist/index.html` and served at `/`.
+- With `directory`, a top-level `pages/404.hbs` stays at `dist/404.html` so hosts can find the error page.
+- With `directory`, `balzac dev` redirects `/about` to `/about/`, as static hosts do.
+- [Listing](#listings-and-pagination) and [taxonomy](#taxonomies) pages (`/posts/`, `/posts/page/2/`, `/tags/rust/`) are always directory-style, written to `<url>/index.html`, whatever the `url_style`. Only the item URLs they link to (`pagination.items`, `collections`) follow `url_style`.
+- With `directory`, a top-level page named like a listing (`pages/posts.hbs` with `[listings.posts]`, or `pages/tags.hbs` with a `tags/taxonomy.hbs` index) would write the same `index.html`, so the build fails.
 
 ### Vite
 
@@ -207,7 +229,7 @@ will be available under `fm.title`
 
 Every page (static pages and collection `details.hbs` pages) has access to all collections under the `collections` namespace. `collections.<name>` is an array of items with:
 
-- `url`: the item's URL (e.g. `/posts/hello`)
+- `url`: the item's URL (e.g. `/posts/hello`, or `/posts/hello/` with `url_style = "directory"`)
 - `slug`: the markdown file name without extension (e.g. `hello`)
 - `fm`: the item's frontmatter
 - `content`: the item's rendered HTML
@@ -295,7 +317,7 @@ Link to a term page from any template with the `term_url` helper:
 
 A value that can never be a term (missing, `null`, or no letters or digits) renders an empty URL and logs a warning. Otherwise `term_url` only builds the URL and does not check that the page exists: a term used only on items outside the taxonomy's `collections`, or a taxonomy without `term.hbs`, gets a link with no page behind it.
 
-The build fails if two pages would be written to the same file, e.g. a `content/posts/index.md` item and the `/posts/` listing, or a `[listings.posts]` listing and a `[taxonomies.posts]` index.
+The build fails if two pages would be written to the same file, e.g. a `content/posts/index.md` item and the `/posts/` listing (with the default `url_style`; with `"directory"` the item is at `/posts/index/` instead), a `[listings.posts]` listing and a `[taxonomies.posts]` index, or (with `url_style = "directory"`) a `pages/posts.hbs` page and the `/posts/` listing.
 
 Listing and taxonomy pages are added to the sitemap.
 
