@@ -89,6 +89,7 @@ dependencies = [
  "shell-words",
  "syntect",
  "tempfile",
+ "thiserror",
  "toml",
 ]
 

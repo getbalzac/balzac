@@ -77,7 +77,10 @@ impl<'a> HookExecutor<'a> {
         let start = Instant::now();
 
         // Parse command
-        let parts = split(hook_command).expect("Invalid command syntax");
+        let parts = split(hook_command).unwrap_or_else(|e| {
+            log::error!("Invalid {hook_name} hook command {hook_command:?}: {e}");
+            std::process::exit(1);
+        });
         if parts.is_empty() {
             log::error!("{hook_name} hook is empty");
             std::process::exit(1);

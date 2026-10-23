@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::config::{ResolvedConfig, TaxonomyConfig};
 use crate::context::{build_collections_context, compare_collection_items, merge_contexts};
+use crate::error::{self, Result};
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageEntry, PageType, SitemapMeta};
 
@@ -466,7 +467,7 @@ pub fn render_listing_pages(
     config: &ResolvedConfig,
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
-) -> std::io::Result<()> {
+) -> Result<()> {
     if !pages
         .iter()
         .any(|page| matches!(page.page_type, PageType::Listing(_)))
@@ -492,13 +493,17 @@ pub fn render_listing_pages(
         log::info!("Rendering listing {}", page.url_path);
 
         if !templates.contains_key(page.source_path.as_path()) {
-            templates.insert(&page.source_path, fs::read_to_string(&page.source_path)?);
+            templates.insert(&page.source_path, error::read_to_string(&page.source_path)?);
         }
         let template = templates[page.source_path.as_path()].clone();
 
         let mut context = listing.context(&items);
         context["collections"] = collections.clone();
-        let rendered = render.render(template, merge_contexts(config, &context));
+        let rendered = render.render(
+            &page.source_path,
+            template,
+            merge_contexts(config, &context),
+        )?;
 
         if let Some(parent) = page.output_path.parent() {
             fs::create_dir_all(parent)?;

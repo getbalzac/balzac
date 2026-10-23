@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::config::{Config, ResolvedConfig, UrlStyle};
 use crate::context::build_collections_context;
+use crate::error::Result;
 use crate::listing::render_listing_pages;
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
@@ -27,12 +28,23 @@ const SSE_ENDPOINT: &str = "/__balzac/events";
 const WATCH_INTERVAL: Duration = Duration::from_millis(300);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
-pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
+/// Shows the build error over the page, and reloads the page when told to by
+/// the dev server, or when the error it shows has been fixed meanwhile.
+const CLIENT_SCRIPT: &str = r#"<script>(()=>{const normalize=(value)=>{if(!value||value==="/")return "/";return value.endsWith("/")?value.slice(0,-1):value;};let currentError=null;const showError=(message)=>{let overlay=document.getElementById("__balzac-error");if(!overlay){overlay=document.createElement("div");overlay.id="__balzac-error";overlay.setAttribute("style","position:fixed;inset:0;z-index:2147483647;overflow:auto;padding:2rem;background:rgba(24,24,27,.96);color:#fecaca;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace");const title=document.createElement("strong");title.textContent="Balzac build failed";title.setAttribute("style","display:block;margin-bottom:1rem;color:#fff;font-size:16px");const details=document.createElement("pre");details.setAttribute("style","margin:0;white-space:pre-wrap");overlay.append(title,details);(document.body||document.documentElement).append(overlay);}overlay.querySelector("pre").textContent=message;currentError=message;};const buildError=__BUILD_ERROR__;if(buildError)showError(buildError);const source=new EventSource("__SSE_ENDPOINT__");source.onmessage=(event)=>{const payload=JSON.parse(event.data);if(payload.kind==="error"||(payload.kind==="status"&&payload.message)){showError(payload.message);return;}if(payload.kind==="status"){if(currentError)window.location.reload();return;}if(payload.kind==="full"){window.location.reload();return;}if(payload.kind==="targeted"&&normalize(window.location.pathname)===normalize(payload.url_path)){window.location.reload();}};})();</script>"#;
+
+pub fn run(root: &Path, host: &str, port: u16) -> Result<()> {
     let mut session = DevSession::new(root)?;
 
     let shared_config = Arc::new(RwLock::new(session.resolved_config.clone()));
+    let build_error = Arc::new(RwLock::new(session.build_error.clone()));
     let events = EventBroker::default();
-    start_http_server(host, port, shared_config.clone(), events.clone())?;
+    start_http_server(
+        host,
+        port,
+        shared_config.clone(),
+        build_error.clone(),
+        events.clone(),
+    )?;
 
     log::info!("Balzac dev server running at http://{host}:{port}");
 
@@ -67,18 +79,13 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
             continue;
         }
 
+        // A failed build keeps the server running: the error is shown in the
+        // browser until a later build succeeds.
         let reload_messages = match session.process_changes(&debounced_changes) {
             Ok(messages) => messages,
             Err(error) => {
-                log::warn!("Error processing file change, skipping reload: {error}");
-                if let Ok(updated_snapshot) = capture_snapshot(&session.resolved_config) {
-                    snapshot = updated_snapshot;
-                } else {
-                    log::warn!(
-                        "Error refreshing watched files after failed reload, keeping previous snapshot"
-                    );
-                }
-                continue;
+                log::error!("Build failed: {error}");
+                vec![ReloadMessage::error(&error.to_string())]
             }
         };
         {
@@ -87,6 +94,10 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
                 .expect("dev config lock should not be poisoned");
             *config = session.resolved_config.clone();
         }
+        build_error
+            .write()
+            .expect("dev build error lock should not be poisoned")
+            .clone_from(&session.build_error);
         for message in reload_messages {
             events.broadcast(&message);
         }
@@ -107,24 +118,52 @@ struct DevSession {
     listing_outputs: BTreeSet<PathBuf>,
     /// Feed files written by the last render, so stale ones can be removed
     feed_paths: BTreeSet<PathBuf>,
+    /// Error of the last build, until a build succeeds again.
+    build_error: Option<String>,
 }
 
 impl DevSession {
-    fn new(root: &Path) -> std::io::Result<Self> {
+    /// Fails only when the config can't be loaded: a failed initial build is
+    /// kept in `build_error` so the server can start and show it.
+    fn new(root: &Path) -> Result<Self> {
         let (parsed_config, resolved_config) = load_config(root)?;
         let mut session = Self {
             root: root.to_path_buf(),
             resolved_config,
             listing_outputs: BTreeSet::new(),
             feed_paths: BTreeSet::new(),
+            build_error: None,
         };
         DevSession::log_ignored_hooks(&parsed_config);
-        session.build_current_config()?;
+        let result = session.build_current_config();
+        if let Err(error) = session.record_build(result) {
+            log::error!("Build failed: {error}");
+        }
         Ok(session)
     }
 
-    fn process_changes(&mut self, changes: &[SourceChange]) -> std::io::Result<Vec<ReloadMessage>> {
-        match classify_changes(&self.resolved_config, changes) {
+    fn process_changes(&mut self, changes: &[SourceChange]) -> Result<Vec<ReloadMessage>> {
+        let mut plan = classify_changes(&self.resolved_config, changes);
+        if plan == ChangePlan::None {
+            return Ok(Vec::new());
+        }
+        // A failed build may have left any page stale or missing, so the next
+        // change rebuilds everything.
+        if self.build_error.is_some() {
+            plan = ChangePlan::FullReload;
+        }
+        let result = self.apply_change_plan(plan);
+        self.record_build(result)
+    }
+
+    /// Keeps the error of a failed build, or clears it after a successful one.
+    fn record_build<T>(&mut self, result: Result<T>) -> Result<T> {
+        self.build_error = result.as_ref().err().map(ToString::to_string);
+        result
+    }
+
+    fn apply_change_plan(&mut self, plan: ChangePlan) -> Result<Vec<ReloadMessage>> {
+        match plan {
             ChangePlan::None => Ok(Vec::new()),
             ChangePlan::FullReload => {
                 self.full_rebuild()?;
@@ -160,10 +199,7 @@ impl DevSession {
         }
     }
 
-    fn handle_static_page_change(
-        &self,
-        target: &TargetedChange,
-    ) -> std::io::Result<Option<ReloadMessage>> {
+    fn handle_static_page_change(&self, target: &TargetedChange) -> Result<Option<ReloadMessage>> {
         match target.change_type {
             ChangeType::Deleted => {
                 // A page rejected for colliding with a listing never replaced the
@@ -183,7 +219,7 @@ impl DevSession {
                 // directory-style `pages/posts.hbs` and the `/posts/` listing, or a
                 // copied asset) before the page can overwrite anything.
                 let site_pages = discover_site_pages(&self.resolved_config)?;
-                let renderer = self.create_renderer();
+                let renderer = self.create_renderer()?;
                 let collections = build_collections_context(site_pages.all(), &renderer)?;
                 render_static_page(&self.resolved_config, &page, &renderer, &collections)?;
                 Ok(Some(ReloadMessage::targeted(&target.url_path)))
@@ -191,14 +227,14 @@ impl DevSession {
         }
     }
 
-    fn full_rebuild(&mut self) -> std::io::Result<()> {
+    fn full_rebuild(&mut self) -> Result<()> {
         let (parsed_config, resolved_config) = load_config(&self.root)?;
         Self::log_ignored_hooks(&parsed_config);
         self.resolved_config = resolved_config;
         self.build_current_config()
     }
 
-    fn build_current_config(&mut self) -> std::io::Result<()> {
+    fn build_current_config(&mut self) -> Result<()> {
         make_dist_folder(&self.resolved_config)?;
         self.listing_outputs.clear();
         self.render_site()?;
@@ -208,8 +244,8 @@ impl DevSession {
         Ok(())
     }
 
-    fn render_site(&mut self) -> std::io::Result<()> {
-        let renderer = self.create_renderer();
+    fn render_site(&mut self) -> Result<()> {
+        let renderer = self.create_renderer()?;
         let site_pages = discover_site_pages(&self.resolved_config)?;
 
         render_pages(&self.resolved_config, site_pages.all(), &renderer)?;
@@ -226,7 +262,7 @@ impl DevSession {
         &mut self,
         site_pages: &SitePages,
         renderer: &HandlebarsRenderer,
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         let written: BTreeSet<PathBuf> = write_feeds(&self.resolved_config, site_pages, renderer)?
             .into_iter()
             .collect();
@@ -271,17 +307,18 @@ impl DevSession {
         Ok(())
     }
 
-    fn refresh_sitemap(&self) -> std::io::Result<()> {
+    fn refresh_sitemap(&self) -> Result<()> {
         write_sitemap(
             &self.resolved_config,
             &discover_site_pages(&self.resolved_config)?,
-        )
+        )?;
+        Ok(())
     }
 
-    fn create_renderer(&self) -> HandlebarsRenderer<'static> {
+    fn create_renderer(&self) -> Result<HandlebarsRenderer<'static>> {
         let mut renderer = HandlebarsRenderer::new(&self.resolved_config);
-        renderer.init(&self.resolved_config);
-        renderer
+        renderer.init(&self.resolved_config)?;
+        Ok(renderer)
     }
 
     fn log_ignored_hooks(parsed_config: &Config) {
@@ -291,15 +328,8 @@ impl DevSession {
     }
 }
 
-fn load_config(root: &Path) -> std::io::Result<(Config, ResolvedConfig)> {
-    let config_path = root.join("balzac.toml");
-    let config_content = fs::read_to_string(&config_path)?;
-    let parsed_config = toml::from_str::<Config>(&config_content).map_err(|error| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Could not parse config: {error}"),
-        )
-    })?;
+fn load_config(root: &Path) -> Result<(Config, ResolvedConfig)> {
+    let parsed_config = Config::load(root)?;
     let mut resolved_config = parsed_config.resolve(root);
     resolved_config.dev_mode = true;
     Ok((parsed_config, resolved_config))
@@ -482,12 +512,17 @@ impl EventBroker {
 enum ReloadKind {
     Full,
     Targeted,
+    Error,
+    /// Sent when a client connects: the current build error, if any.
+    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ReloadMessage {
     kind: ReloadKind,
     url_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 impl ReloadMessage {
@@ -495,6 +530,7 @@ impl ReloadMessage {
         Self {
             kind: ReloadKind::Full,
             url_path: None,
+            message: None,
         }
     }
 
@@ -502,6 +538,26 @@ impl ReloadMessage {
         Self {
             kind: ReloadKind::Targeted,
             url_path: Some(url_path.to_string()),
+            message: None,
+        }
+    }
+
+    /// The current build state, sent to each client when it connects, so a
+    /// page that missed a build (it loaded or reconnected meanwhile) catches up.
+    fn status(build_error: Option<&str>) -> Self {
+        Self {
+            kind: ReloadKind::Status,
+            url_path: None,
+            message: build_error.map(ToString::to_string),
+        }
+    }
+
+    /// Shows a build error in the browser.
+    fn error(message: &str) -> Self {
+        Self {
+            kind: ReloadKind::Error,
+            url_path: None,
+            message: Some(message.to_string()),
         }
     }
 }
@@ -510,6 +566,7 @@ fn start_http_server(
     host: &str,
     port: u16,
     config: Arc<RwLock<ResolvedConfig>>,
+    build_error: Arc<RwLock<Option<String>>>,
     events: EventBroker,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind((host, port))?;
@@ -520,9 +577,12 @@ fn start_http_server(
             match listener.accept() {
                 Ok((stream, _)) => {
                     let config = config.clone();
+                    let build_error = build_error.clone();
                     let events = events.clone();
                     thread::spawn(move || {
-                        if let Err(error) = handle_connection(stream, &config, &events) {
+                        if let Err(error) =
+                            handle_connection(stream, &config, &build_error, &events)
+                        {
                             log::debug!("Error handling dev request: {error}");
                         }
                     });
@@ -544,6 +604,7 @@ fn start_http_server(
 fn handle_connection(
     stream: TcpStream,
     config: &RwLock<ResolvedConfig>,
+    build_error: &RwLock<Option<String>>,
     events: &EventBroker,
 ) -> std::io::Result<()> {
     let (method, path) = read_request(&stream)?;
@@ -558,7 +619,16 @@ fn handle_connection(
     }
 
     if path == SSE_ENDPOINT {
-        return serve_sse(stream, &events.subscribe());
+        // Subscribe before reading the status so no build falls in between: a
+        // page that loaded before a build finished then still catches up.
+        let receiver = events.subscribe();
+        let status = ReloadMessage::status(
+            build_error
+                .read()
+                .expect("dev build error lock should not be poisoned")
+                .as_deref(),
+        );
+        return serve_sse(stream, &status, &receiver);
     }
 
     let config_guard = config
@@ -567,7 +637,11 @@ fn handle_connection(
     if let Some(location) = directory_redirect(&config_guard, &path) {
         return write_redirect(stream, &location);
     }
-    let response = build_file_response(&config_guard, &path)?;
+    let build_error = build_error
+        .read()
+        .expect("dev build error lock should not be poisoned")
+        .clone();
+    let response = build_file_response(&config_guard, &path, build_error.as_deref())?;
     write_response(
         stream,
         response.status,
@@ -583,15 +657,18 @@ struct FileResponse {
     body: Vec<u8>,
 }
 
+/// Serves `request_path` from the output directory; HTML pages get the dev
+/// client, which shows `build_error` when the last build failed.
 fn build_file_response(
     config: &ResolvedConfig,
     request_path: &str,
+    build_error: Option<&str>,
 ) -> std::io::Result<FileResponse> {
     if let Some(file_path) = resolve_output_path(&config.output_directory, request_path) {
         return Ok(FileResponse {
             status: "200 OK",
             content_type: content_type_for_path(&file_path),
-            body: read_output_file(&file_path, config)?,
+            body: read_output_file(&file_path, config, build_error)?,
         });
     }
 
@@ -601,7 +678,21 @@ fn build_file_response(
         return Ok(FileResponse {
             status: "404 Not Found",
             content_type: content_type_for_path(&not_found_page),
-            body: read_output_file(&not_found_page, config)?,
+            body: read_output_file(&not_found_page, config, build_error)?,
+        });
+    }
+
+    // a failed build may have left no page at all: show its error anyway
+    if build_error.is_some() {
+        return Ok(FileResponse {
+            status: "404 Not Found",
+            content_type: "text/html; charset=utf-8",
+            body: inject_dev_scripts(
+                "<!DOCTYPE html><html><head><title>Build failed</title></head><body></body></html>",
+                config,
+                build_error,
+            )
+            .into_bytes(),
         });
     }
 
@@ -612,11 +703,15 @@ fn build_file_response(
     })
 }
 
-fn read_output_file(file_path: &Path, config: &ResolvedConfig) -> std::io::Result<Vec<u8>> {
+fn read_output_file(
+    file_path: &Path,
+    config: &ResolvedConfig,
+    build_error: Option<&str>,
+) -> std::io::Result<Vec<u8>> {
     let body = fs::read(file_path)?;
     if is_html_path(file_path) {
         let html = String::from_utf8_lossy(&body);
-        return Ok(inject_dev_scripts(&html, config).into_bytes());
+        return Ok(inject_dev_scripts(&html, config, build_error).into_bytes());
     }
     Ok(body)
 }
@@ -647,22 +742,20 @@ fn read_request(stream: &TcpStream) -> std::io::Result<(String, String)> {
     Ok((method, path))
 }
 
+/// Streams `status`, then every message of `receiver`.
 fn serve_sse(
     mut stream: TcpStream,
+    status: &ReloadMessage,
     receiver: &mpsc::Receiver<ReloadMessage>,
 ) -> std::io::Result<()> {
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
     )?;
-    stream.flush()?;
+    write_event(&mut stream, status)?;
 
     loop {
         match receiver.recv_timeout(Duration::from_secs(10)) {
-            Ok(message) => {
-                let payload = serde_json::to_string(&message).map_err(std::io::Error::other)?;
-                stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
-                stream.flush()?;
-            }
+            Ok(message) => write_event(&mut stream, &message)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 stream.write_all(b": keep-alive\n\n")?;
                 stream.flush()?;
@@ -670,6 +763,12 @@ fn serve_sse(
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
     }
+}
+
+fn write_event(stream: &mut TcpStream, message: &ReloadMessage) -> std::io::Result<()> {
+    let payload = serde_json::to_string(message).map_err(std::io::Error::other)?;
+    stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
+    stream.flush()
 }
 
 fn write_response(
@@ -849,7 +948,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
     }
 }
 
-fn inject_dev_scripts(html: &str, config: &ResolvedConfig) -> String {
+fn inject_dev_scripts(html: &str, config: &ResolvedConfig, build_error: Option<&str>) -> String {
     let mut scripts = String::new();
 
     if let Some(bundler) = &config.bundler
@@ -863,9 +962,14 @@ fn inject_dev_scripts(html: &str, config: &ResolvedConfig) -> String {
         );
     }
 
-    let _ = write!(
-        scripts,
-        r#"<script>(()=>{{const normalize=(value)=>{{if(!value||value==="/")return "/";return value.endsWith("/")?value.slice(0,-1):value;}};const source=new EventSource("{SSE_ENDPOINT}");source.onmessage=(event)=>{{const payload=JSON.parse(event.data);if(payload.kind==="full"){{window.location.reload();return;}}if(payload.kind==="targeted"&&normalize(window.location.pathname)===normalize(payload.url_path)){{window.location.reload();}}}};}})();</script>"#
+    // `<` is escaped so the message can't close the script element
+    let build_error = serde_json::to_string(&build_error)
+        .expect("a string always serializes to JSON")
+        .replace('<', "\\u003c");
+    scripts.push_str(
+        &CLIENT_SCRIPT
+            .replace("__SSE_ENDPOINT__", SSE_ENDPOINT)
+            .replace("__BUILD_ERROR__", &build_error),
     );
 
     if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
@@ -974,6 +1078,7 @@ fn diff_snapshots(previous: &Snapshot, next: &Snapshot) -> Vec<SourceChange> {
 mod tests {
     use super::*;
     use crate::config::{Bundler, ViteBundler};
+    use crate::error::Error;
     use tempfile::TempDir;
 
     fn setup_dev_project() -> (TempDir, ResolvedConfig) {
@@ -1084,7 +1189,7 @@ mod tests {
     #[test]
     fn test_inject_dev_scripts_includes_balzac_client() {
         let (_temp_dir, config) = setup_dev_project();
-        let injected = inject_dev_scripts("<html><body><h1>Hi</h1></body></html>", &config);
+        let injected = inject_dev_scripts("<html><body><h1>Hi</h1></body></html>", &config, None);
         assert!(injected.contains(SSE_ENDPOINT));
         assert!(injected.contains("EventSource"));
     }
@@ -1092,7 +1197,7 @@ mod tests {
     #[test]
     fn test_inject_dev_scripts_handles_mixed_case_body_tag() {
         let (_temp_dir, config) = setup_dev_project();
-        let injected = inject_dev_scripts("<html><Body><h1>Hi</h1></BoDy></html>", &config);
+        let injected = inject_dev_scripts("<html><Body><h1>Hi</h1></BoDy></html>", &config, None);
         assert!(injected.contains("</BoDy>"));
         assert!(injected.find("EventSource").unwrap() < injected.find("</BoDy>").unwrap());
     }
@@ -1108,7 +1213,7 @@ mod tests {
             }),
         });
 
-        let injected = inject_dev_scripts("<html><body></body></html>", &config);
+        let injected = inject_dev_scripts("<html><body></body></html>", &config, None);
         assert!(injected.contains("http://127.0.0.1:5173/@vite/client"));
     }
 
@@ -1132,7 +1237,7 @@ mod tests {
         )
         .unwrap();
 
-        let response = build_file_response(&config, "/does-not-exist").unwrap();
+        let response = build_file_response(&config, "/does-not-exist", None).unwrap();
         assert_eq!(response.status, "404 Not Found");
         assert_eq!(response.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(response.body).unwrap();
@@ -1145,7 +1250,7 @@ mod tests {
         let (_temp_dir, config) = setup_dev_project();
         fs::create_dir_all(&config.output_directory).unwrap();
 
-        let response = build_file_response(&config, "/does-not-exist").unwrap();
+        let response = build_file_response(&config, "/does-not-exist", None).unwrap();
         assert_eq!(response.status, "404 Not Found");
         assert_eq!(response.content_type, "text/plain; charset=utf-8");
         assert_eq!(response.body, b"Not Found");
@@ -1162,7 +1267,7 @@ mod tests {
         .unwrap();
         fs::write(config.output_directory.join(ROBOTS_FILE), "User-agent: *\n").unwrap();
 
-        let response = build_file_response(&config, "/robots.txt").unwrap();
+        let response = build_file_response(&config, "/robots.txt", None).unwrap();
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.content_type, "text/plain; charset=utf-8");
         assert_eq!(response.body, b"User-agent: *\n");
@@ -1682,6 +1787,187 @@ per_page = 1
         assert!(!sitemap.contains("/posts/page/2/"));
     }
 
+    fn setup_partial_project(partial: &str) -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("partials")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+partials_directory = "./partials"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("partials/title.hbs"), partial).unwrap();
+        fs::write(root.join("pages/index.hbs"), "<body>{{> title}}</body>").unwrap();
+        fs::write(root.join("pages/about.hbs"), "<body>About</body>").unwrap();
+        temp_dir
+    }
+
+    fn change(path: PathBuf) -> SourceChange {
+        SourceChange {
+            path,
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn test_failed_rebuild_keeps_error_until_next_successful_build() {
+        let temp_dir = setup_partial_project("<h1>v1</h1>");
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(session.build_error, None);
+
+        fs::write(root.join("partials/title.hbs"), "<h1>\n{{#if}}</h1>").unwrap();
+        let error = session
+            .process_changes(&[change(root.join("partials/title.hbs"))])
+            .unwrap_err();
+        let Error::Template { path, line, .. } = &error else {
+            panic!("expected a template error, got {error:?}");
+        };
+        assert!(path.ends_with("partials/title.hbs"));
+        assert_eq!(*line, Some(2));
+        assert_eq!(session.build_error, Some(error.to_string()));
+
+        let response = build_file_response(
+            &session.resolved_config,
+            "/",
+            session.build_error.as_deref(),
+        )
+        .unwrap();
+        let body = String::from_utf8(response.body).unwrap();
+        assert!(body.contains("Balzac build failed"));
+        assert!(body.contains("partials/title.hbs:2"));
+
+        fs::write(root.join("partials/title.hbs"), "<h1>v2</h1>").unwrap();
+        let messages = session
+            .process_changes(&[change(root.join("partials/title.hbs"))])
+            .unwrap();
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(session.build_error, None);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "<body><h1>v2</h1></body>"
+        );
+    }
+
+    #[test]
+    fn test_unrelated_change_does_not_clear_build_error() {
+        let temp_dir = setup_partial_project("<h1>v1</h1>");
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::write(root.join("pages/index.hbs"), "{{#each}}").unwrap();
+        assert!(
+            session
+                .process_changes(&[change(root.join("pages/index.hbs"))])
+                .is_err()
+        );
+
+        // a targeted rebuild of another page would succeed, but the site is
+        // rebuilt as a whole until the error is fixed
+        fs::write(root.join("pages/about.hbs"), "<body>About v2</body>").unwrap();
+        assert!(
+            session
+                .process_changes(&[change(root.join("pages/about.hbs"))])
+                .is_err()
+        );
+        assert!(session.build_error.is_some());
+
+        fs::write(root.join("pages/index.hbs"), "<body>fixed</body>").unwrap();
+        let messages = session
+            .process_changes(&[change(root.join("pages/index.hbs"))])
+            .unwrap();
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(session.build_error, None);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/about.html")).unwrap(),
+            "<body>About v2</body>"
+        );
+    }
+
+    #[test]
+    fn test_failed_initial_build_still_starts_session() {
+        let temp_dir = setup_partial_project("{{/if}}");
+        let root = temp_dir.path();
+
+        let session = DevSession::new(root).unwrap();
+        let error = session.build_error.clone().expect("build should fail");
+        assert!(error.contains("partials/title.hbs:1:"), "{error}");
+
+        // nothing was rendered, missing pages show the error instead
+        let response =
+            build_file_response(&session.resolved_config, "/", Some(error.as_str())).unwrap();
+        assert_eq!(response.status, "404 Not Found");
+        assert_eq!(response.content_type, "text/html; charset=utf-8");
+        assert!(
+            String::from_utf8(response.body)
+                .unwrap()
+                .contains("Balzac build failed")
+        );
+    }
+
+    #[test]
+    fn test_inject_dev_scripts_escapes_build_error() {
+        let (_temp_dir, config) = setup_dev_project();
+        let injected = inject_dev_scripts(
+            "<html><body></body></html>",
+            &config,
+            Some("bad </script><script>alert(1)</script>"),
+        );
+        assert!(!injected.contains("</script><script>alert"));
+        assert!(injected.contains(r#"const buildError="bad \u003c/script>"#));
+
+        let injected = inject_dev_scripts("<html><body></body></html>", &config, None);
+        assert!(injected.contains("const buildError=null;"));
+    }
+
+    /// First event sent to a client connecting to the SSE endpoint.
+    fn first_sse_event(build_error: Option<&str>) -> String {
+        let (_temp_dir, config) = setup_dev_project();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let config = RwLock::new(config);
+        let build_error = RwLock::new(build_error.map(ToString::to_string));
+        let events = EventBroker::default();
+        thread::spawn(move || handle_connection(server, &config, &build_error, &events));
+
+        write!(client, "GET {SSE_ENDPOINT} HTTP/1.1\r\n\r\n").unwrap();
+        BufReader::new(client)
+            .lines()
+            .map(Result::unwrap)
+            .find(|line| line.starts_with("data: "))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_sse_client_first_receives_current_build_status() {
+        assert_eq!(
+            first_sse_event(Some("boom")),
+            r#"data: {"kind":"status","url_path":null,"message":"boom"}"#
+        );
+        assert_eq!(
+            first_sse_event(None),
+            r#"data: {"kind":"status","url_path":null}"#
+        );
+    }
+
+    #[test]
+    fn test_error_message_serialization() {
+        let payload = serde_json::to_string(&ReloadMessage::error("boom")).unwrap();
+        assert_eq!(
+            payload,
+            r#"{"kind":"error","url_path":null,"message":"boom"}"#
+        );
+        let payload = serde_json::to_string(&ReloadMessage::full()).unwrap();
+        assert_eq!(payload, r#"{"kind":"full","url_path":null}"#);
+    }
+
     #[test]
     fn test_classify_listing_template_change_as_full_reload() {
         let (_temp_dir, config) = setup_dev_project();
@@ -1942,11 +2228,10 @@ url_style = "directory"
             change_type: ChangeType::Created,
             is_dir: false,
         }]);
-        assert_eq!(
-            created
-                .expect_err("the collision should be reported")
-                .kind(),
-            std::io::ErrorKind::AlreadyExists
+        let error = created.expect_err("the collision should be reported");
+        assert!(
+            matches!(&error, Error::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error:?}"
         );
         assert_eq!(fs::read_to_string(&asset).unwrap(), "asset");
 
@@ -2035,11 +2320,10 @@ collections = ["posts"]
             change_type: ChangeType::Created,
             is_dir: false,
         }]);
-        assert_eq!(
-            created
-                .expect_err("the collision should be reported")
-                .kind(),
-            std::io::ErrorKind::AlreadyExists
+        let error = created.expect_err("the collision should be reported");
+        assert!(
+            matches!(&error, Error::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error:?}"
         );
         assert_eq!(fs::read_to_string(&asset).unwrap(), "asset");
 

@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::config;
+use crate::error::Result;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageEntry, PageType};
 
@@ -41,7 +42,7 @@ fn merge(a: &mut serde_json::Value, b: &serde_json::Value) {
 pub fn build_collections_context(
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
-) -> std::io::Result<serde_json::Value> {
+) -> Result<serde_json::Value> {
     let mut collections: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
     let mut items: Vec<&PageEntry> = pages
@@ -56,7 +57,9 @@ pub fn build_collections_context(
         };
 
         let content = match &page.content {
-            Some(raw_content) => render.render_markdown(raw_content)?,
+            Some(raw_content) => render
+                .render_markdown(raw_content)
+                .map_err(|e| e.in_page(&page.source_path))?,
             None => String::new(),
         };
         let item = serde_json::json!({

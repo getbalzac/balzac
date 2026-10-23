@@ -40,6 +40,8 @@ Build the site:
 balzac build
 ```
 
+When a template, frontmatter or config file is invalid, the build stops with an error naming the file (and the line and column for template errors) and exits with status 1.
+
 Build a site from a specific root:
 
 ```sh
@@ -74,6 +76,7 @@ Current behavior:
 - direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; listing pages that are no longer generated (e.g. a tag with no posts left) are removed
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
 - hooks are ignored in dev mode
+- a failed build (template, frontmatter or config error) does not stop the server: the error is logged and shown in an overlay in the browser until the next successful build, and any change made while the build is failing rebuilds the whole site. Only a `balzac.toml` that cannot be read or parsed when the server starts stops it, since the config says which directories to serve and watch
 - missing paths are answered with a `404` status and your `404.html` page if you have one (see [404 Page](#404-page)), otherwise plain text
 
 The dev server defaults to `http://127.0.0.1:4000`.
