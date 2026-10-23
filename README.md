@@ -95,6 +95,26 @@ Balzac supports different directories that you are free to create or skip:
 - base_url (optional): the public URL of the site, used for the sitemap and robots.txt
 - sitemap (optional): see `balzac init --sitemap`
 - robots (optional): see [robots.txt](#robotstxt)
+- url_style (optional): how page URLs map to output files, see [URL Style](#url-style)
+
+### URL Style
+
+`url_style` controls where pages are written and which URLs are used for them (including in the sitemap and the dev server).
+
+| `url_style`               | `pages/about.hbs`        | `content/posts/foo.md`       |
+| ------------------------- | ------------------------ | ---------------------------- |
+| `"extensionless"` (default) | `dist/about.html` → `/about` | `dist/posts/foo.html` → `/posts/foo` |
+| `"directory"`             | `dist/about/index.html` → `/about/` | `dist/posts/foo/index.html` → `/posts/foo/` |
+
+```toml
+url_style = "directory"
+```
+
+- `extensionless` needs a host that serves `about.html` for `/about` (Netlify, Vercel, Cloudflare Pages).
+- `directory` works on any static host (S3, GitHub Pages, nginx defaults).
+- `pages/index.hbs` is always written to `dist/index.html` and served at `/`.
+- With `directory`, a top-level `pages/404.hbs` stays at `dist/404.html` so hosts can find the error page.
+- With `directory`, `balzac dev` redirects `/about` to `/about/`, as static hosts do.
 
 ### Vite
 

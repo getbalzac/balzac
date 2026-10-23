@@ -7,6 +7,7 @@ pub mod hooks;
 pub mod renderer;
 pub mod robots;
 pub mod sitemap;
+pub mod url;
 pub mod vite;
 
 use std::{
@@ -18,6 +19,7 @@ use crate::{
     context::{build_collections_context, merge_contexts},
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
+    url::{PageLocation, page_location},
 };
 
 /// Output file name of the not-found page, which static hosts serve for missing paths.
@@ -48,7 +50,8 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
     let dir_exists = fs::exists(&parsed_config.assets_directory)?;
 
     if dir_exists {
-        fs::create_dir(parsed_config.output_directory.join("assets"))?;
+        // A directory-style `pages/assets.hbs` may already have created this directory.
+        fs::create_dir_all(parsed_config.output_directory.join("assets"))?;
         for entry in fs::read_dir(&parsed_config.assets_directory)? {
             let dir = entry?;
 
@@ -65,6 +68,18 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
                 .output_directory
                 .join("assets")
                 .join(dir.file_name());
+            // Only a rendered page can be here already (e.g. a directory-style
+            // `pages/assets.hbs`), and silently replacing it would lose the page.
+            if fs::exists(&path)? {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "asset {} would overwrite the rendered page at {}",
+                        dir.path().display(),
+                        path.display()
+                    ),
+                ));
+            }
             log::debug!(
                 "Copying {} to {}",
                 dir.file_name().to_string_lossy(),
@@ -341,15 +356,16 @@ pub fn static_page_entry_from_source(
         return None;
     }
 
-    let file_stem = source_path.file_stem()?.to_string_lossy().to_string();
-    let url_path = if file_stem == "index" {
-        "/".to_string()
+    let file_stem = source_path.file_stem()?.to_string_lossy();
+    let route: &[&str] = if file_stem == "index" {
+        &[]
     } else {
-        format!("/{file_stem}")
+        &[&file_stem]
     };
-    let output_path = parsed_config
-        .output_directory
-        .join(PathBuf::from(&file_stem).with_extension("html"));
+    let PageLocation {
+        url_path,
+        output_path,
+    } = page_location(parsed_config, route);
     let sitemap_meta = SitemapMeta {
         // the not-found page is not real content
         exclude: file_stem == "404",
@@ -371,24 +387,11 @@ pub fn collection_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> std::io::Result<Option<PageEntry>> {
-    let Ok(relative_path) = source_path.strip_prefix(&parsed_config.content_directory) else {
-        return Ok(None);
-    };
-    let mut components = relative_path.components();
-    let Some(collection_name) = components
-        .next()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
+    let Some((collection_name, location)) =
+        collection_location_from_source(parsed_config, source_path)
     else {
         return Ok(None);
     };
-    let Some(file_name) = components.next() else {
-        return Ok(None);
-    };
-    if components.next().is_some()
-        || source_path.extension().and_then(|ext| ext.to_str()) != Some("md")
-    {
-        return Ok(None);
-    }
 
     let details_page_path = parsed_config
         .pages_directory
@@ -398,25 +401,14 @@ pub fn collection_entry_from_source(
         return Ok(None);
     }
 
-    let file_stem = Path::new(file_name.as_os_str())
-        .file_stem()
-        .expect("Could not get collection entry file stem")
-        .to_string_lossy()
-        .to_string();
     let file_content = fs::read_to_string(source_path)?;
     let parsed_content = collection::parse_markdown(&file_content)?;
     let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
-    let url_path = format!("/{collection_name}/{file_stem}");
-    let output_path = parsed_config
-        .output_directory
-        .join(&collection_name)
-        .join(&file_stem)
-        .with_extension("html");
 
     Ok(Some(PageEntry {
-        url_path,
+        url_path: location.url_path,
         source_path: source_path.to_path_buf(),
-        output_path,
+        output_path: location.output_path,
         page_type: PageType::Collection {
             name: collection_name,
         },
@@ -448,6 +440,7 @@ pub fn render_static_page(
             &serde_json::json!({"collections": collections}),
         ),
     );
+    create_parent_dir(&page.output_path)?;
     fs::write(&page.output_path, rendered)?;
     Ok(())
 }
@@ -468,10 +461,7 @@ pub fn render_collection_page(
         }
     };
 
-    let collection_output_dir = parsed_config.output_directory.join(collection_name);
-    if !fs::exists(&collection_output_dir)? {
-        fs::create_dir_all(&collection_output_dir)?;
-    }
+    create_parent_dir(&page.output_path)?;
 
     let details_page_path = parsed_config
         .pages_directory
@@ -525,7 +515,26 @@ pub fn remove_output_for_source(
         fs::remove_file(&output_path)?;
     }
 
+    // Directory-style pages own their `<page>/index.html` directory; drop it once empty.
+    if output_path
+        .file_name()
+        .is_some_and(|name| name == "index.html")
+        && let Some(page_dir) = output_path.parent()
+        && page_dir != parsed_config.output_directory
+        && page_dir.is_dir()
+        && fs::read_dir(page_dir)?.next().is_none()
+    {
+        fs::remove_dir(page_dir)?;
+    }
+
     Ok(Some(output_path))
+}
+
+fn create_parent_dir(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(parent) => fs::create_dir_all(parent),
+        None => Ok(()),
+    }
 }
 
 #[must_use]
@@ -533,6 +542,17 @@ pub fn collection_output_path_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> Option<PathBuf> {
+    collection_location_from_source(parsed_config, source_path)
+        .map(|(_, location)| location.output_path)
+}
+
+/// Derive a collection item's name and location from its path alone (no file read),
+/// e.g. `content/posts/hello.md` -> (`posts`, `/posts/hello`).
+#[must_use]
+pub fn collection_location_from_source(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> Option<(String, PageLocation)> {
     let relative_path = source_path
         .strip_prefix(&parsed_config.content_directory)
         .ok()?;
@@ -548,11 +568,6 @@ pub fn collection_output_path_from_source(
     let file_stem = Path::new(file_name.as_os_str())
         .file_stem()?
         .to_string_lossy();
-    Some(
-        parsed_config
-            .output_directory
-            .join(collection_name)
-            .join(file_stem.as_ref())
-            .with_extension("html"),
-    )
+    let location = page_location(parsed_config, &[&collection_name, &file_stem]);
+    Some((collection_name, location))
 }
