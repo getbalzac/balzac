@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 // Import from the main crate
-use balzac::config::{Config, RobotsConfig, SitemapConfig};
+use balzac::config::{Config, RobotsConfig, SitemapConfig, UrlStyle};
 use balzac::{
-    discover_collections, discover_static_pages, make_dist_folder, render_collection_items,
-    render_pages, write_robots, write_sitemap,
+    add_assets, discover_collections, discover_static_pages, make_dist_folder,
+    render_collection_items, render_pages, write_robots, write_sitemap,
 };
 
 /// Helper function to create a temporary project structure
@@ -79,6 +79,7 @@ fn test_partials_registration() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -118,6 +119,7 @@ fn test_partials_registration_without_folder() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -163,6 +165,7 @@ fn test_full_workflow_single_page() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -224,6 +227,7 @@ fn test_full_workflow_multiple_pages() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -295,6 +299,7 @@ fn test_workflow_with_global_data() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -345,6 +350,7 @@ fn test_make_dist_folder_creates_directory() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -385,6 +391,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -427,6 +434,7 @@ fn test_workflow_preserves_file_extensions() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -480,6 +488,7 @@ fn test_template_with_conditionals() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -535,6 +544,7 @@ fn test_sitemap_generation_with_static_pages() {
             default_changefreq: None,
         }),
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -633,6 +643,7 @@ fn test_sitemap_generation_with_collections() {
             default_changefreq: None,
         }),
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -730,6 +741,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         base_url: Some("https://example.com".to_string()),
         sitemap: Some(SitemapConfig::default()),
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -785,6 +797,7 @@ fn test_no_sitemap_without_base_url() {
         base_url: None, // No base_url configured
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -864,6 +877,7 @@ fn test_custom_tag_renderer_for_links() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -963,6 +977,7 @@ fn test_collections_available_in_static_and_details_pages() {
         base_url: None,
         sitemap: None,
         robots: None,
+        url_style: UrlStyle::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -1138,4 +1153,142 @@ fn test_user_robots_in_pages_wins() {
 
     let robots = fs::read_to_string(output_dir.join("robots.txt")).expect("robots.txt missing");
     assert_eq!(robots, user_robots);
+}
+
+#[test]
+fn test_directory_url_style_writes_index_files_and_trailing_slash_urls() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        layouts_dir,
+        partials_dir,
+        assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("blog")).expect("Failed to create blog pages dir");
+    fs::create_dir_all(content_dir.join("blog")).expect("Failed to create blog content dir");
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+    fs::write(pages_dir.join("about.hbs"), "<h1>About</h1>").expect("Failed to write about");
+    fs::write(pages_dir.join("404.hbs"), "<h1>Not found</h1>").expect("Failed to write 404");
+    fs::write(pages_dir.join("blog/details.hbs"), "<h1>{{fm.title}}</h1>")
+        .expect("Failed to write details template");
+    fs::write(
+        content_dir.join("blog/post-1.md"),
+        "---\ntitle: First Post\n---\n\nHello",
+    )
+    .expect("Failed to write post-1");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        assets_directory: assets_dir.to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        base_url: Some("https://example.com".to_string()),
+        sitemap: Some(SitemapConfig::default()),
+        url_style: UrlStyle::Directory,
+        ..Config::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let mut site_pages = SitePages::new();
+    site_pages.add_pages(discover_static_pages(&resolved_config).expect("Failed to discover"));
+    site_pages.add_pages(discover_collections(&resolved_config).expect("Failed to discover"));
+
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    render_pages(&resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
+    render_collection_items(&resolved_config, site_pages.all(), &renderer)
+        .expect("Failed to render collections");
+    write_sitemap(&resolved_config, &site_pages).expect("Failed to write sitemap");
+
+    assert!(output_dir.join("index.html").is_file());
+    assert!(output_dir.join("about/index.html").is_file());
+    assert!(output_dir.join("blog/post-1/index.html").is_file());
+    assert!(
+        output_dir.join("404.html").is_file(),
+        "404 page must stay at the root for static hosts"
+    );
+    assert!(!output_dir.join("about.html").exists());
+    assert!(!output_dir.join("blog/post-1.html").exists());
+
+    let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("Failed to read");
+    assert!(sitemap.contains("<loc>https://example.com/</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/about/</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/blog/post-1/</loc>"));
+    assert!(!sitemap.contains("<loc>https://example.com/about</loc>"));
+}
+
+#[test]
+fn test_directory_url_style_page_named_like_assets_directory() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        layouts_dir,
+        partials_dir,
+        assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    fs::create_dir(&assets_dir).expect("Failed to create assets dir");
+    fs::write(assets_dir.join("style.css"), "body {}").expect("Failed to write asset");
+    fs::write(pages_dir.join("assets.hbs"), "<h1>Assets</h1>").expect("Failed to write page");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: layouts_dir.to_string_lossy().to_string(),
+        partials_directory: partials_dir.to_string_lossy().to_string(),
+        assets_directory: assets_dir.to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        url_style: UrlStyle::Directory,
+        ..Config::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover");
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    render_pages(&resolved_config, &pages, &renderer).expect("Failed to render pages");
+    add_assets(&resolved_config).expect("Assets should copy into the page's directory");
+
+    assert!(output_dir.join("assets/index.html").is_file());
+    assert!(output_dir.join("assets/style.css").is_file());
+}
+
+#[test]
+fn test_asset_colliding_with_rendered_page_fails_instead_of_overwriting() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, assets_dir, _) = setup_test_project();
+
+    fs::create_dir(&assets_dir).expect("Failed to create assets dir");
+    fs::write(assets_dir.join("index.html"), "asset").expect("Failed to write asset");
+    fs::write(pages_dir.join("assets.hbs"), "page").expect("Failed to write page");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        assets_directory: assets_dir.to_string_lossy().to_string(),
+        url_style: UrlStyle::Directory,
+        ..Config::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover");
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    render_pages(&resolved_config, &pages, &renderer).expect("Failed to render pages");
+
+    let error = add_assets(&resolved_config).expect_err("collision should be reported");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        fs::read_to_string(output_dir.join("assets/index.html")).unwrap(),
+        "page",
+        "the rendered page must not be replaced"
+    );
 }
