@@ -124,7 +124,7 @@ The build fails if two page files would write the same file, e.g. `pages/docs/in
 - content_directory (optional): directory where content (markdown) will reside
 - tags_directory (optional): directory where markdown tag templates will reside, see [Tag templates](#tag-templates)
 - global: fill this array if you want to have global data available in all the templates and files
-- base_url (optional): the public URL of the site, used for the sitemap and robots.txt
+- base_url (optional): the public URL of the site, used for the sitemap, robots.txt and the [`url_for` and `asset` helpers](#url_for)
 - sitemap (optional): see [Sitemap](#sitemap)
 - robots (optional): see [robots.txt](#robotstxt)
 - listings (optional): paginated collection listings, see [Listings and pagination](#listings-and-pagination)
@@ -192,6 +192,121 @@ balzac dev
 ```
 
 Templates using `{{vite_url "main.js"}}` will resolve to the Vite dev server in `balzac dev` and to the built manifest in `balzac build`.
+
+## Template Helpers
+
+Besides the helpers that come with [handlebars-rust](https://docs.rs/handlebars) (`if`, `unless`, `each`, `with`, `lookup`, `log`, `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `and`, `or`, `not`, `len`), Balzac registers these helpers in every template, including [tag templates](#tag-templates). [`vite_url`](#vite) and [`term_url`](#taxonomies) are documented with their features.
+
+Helpers that return lists (`sort`, `limit`, `where`) are meant to be used as subexpressions and can be nested:
+
+```hbs
+{{#each (limit (sort (where collections.posts "fm.tags" "rust") "fm.title") 5)}}
+  <a href="{{url_for url}}">{{fm.title}}</a>
+{{/each}}
+```
+
+### url_for
+
+Turns a site path into a URL, taking the path of `base_url` into account, so a site can be deployed under a sub-path:
+
+```hbs
+<a href="{{url_for "/about/"}}">About</a>     {{!-- base_url = "https://example.com/blog/" -> /blog/about/ --}}
+<a href="{{url_for url}}">{{fm.title}}</a>   {{!-- an item URL -> /blog/posts/hello --}}
+<link rel="canonical" href="{{url_for url absolute=true}}"> {{!-- https://example.com/blog/posts/hello --}}
+```
+
+- URLs are root-relative (`/blog/about/`), so they work on any host. Without `base_url`, or when the path of `base_url` is `/`, the path is returned with a leading `/`.
+- `absolute=true` prepends the whole `base_url`, for canonical links, feeds and social tags. It fails when `base_url` is not set.
+- External URLs (`https://...`, `//cdn...`, `mailto:...`) and fragments (`#top`) are returned unchanged.
+- In `balzac dev` the site is served at `/`, so the path of `base_url` is not prepended (`absolute=true` still uses `base_url`).
+
+The helper is called `url_for` rather than `url` because a helper named `url` would replace the `url` field of collection items in `{{url}}`.
+
+### asset
+
+Like `url_for`, for files of the assets directory, which are published under `/assets/`. Accepts `absolute=true` too:
+
+```hbs
+<link rel="stylesheet" href="{{asset "css/site.css"}}"> {{!-- /assets/css/site.css --}}
+```
+
+### date
+
+Formats a date with [strftime](https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html#conversion-specifications) syntax. The format defaults to `%Y-%m-%d`:
+
+```hbs
+<time datetime="{{date fm.date}}">{{date fm.date "%B %-d, %Y"}}</time> {{!-- January 31, 2025 --}}
+&copy; {{date "now" "%Y"}}
+```
+
+- The date can be an ISO 8601 date or date-time (`2025-01-31`, `2025-01-31T10:00:00`, `2025-01-31 10:00:00+01:00`, `2025-01-31T09:00:00Z`), a Unix timestamp in seconds, or `"now"` (the build time, in UTC).
+- Dates are formatted as written: there is no time zone conversion. Offsets (`%z`, `%:z`) can only be formatted for dates that have one; Unix timestamps and `"now"` are in UTC.
+- A missing or `null` date renders nothing. A date that can't be parsed, or an invalid format, fails the build.
+
+### markdown
+
+Renders a markdown string, such as a frontmatter field, with the [markdown options](#markdown) and tag templates of the site. The HTML is not escaped, so double braces are enough. `inline=true` drops the `<p>` around input made of a single paragraph, for use in headings or links:
+
+```hbs
+<div class="summary">{{markdown fm.summary}}</div>
+<h1>{{markdown fm.title inline=true}}</h1>
+```
+
+A missing or `null` value renders nothing.
+
+### slugify
+
+Turns text into a URL slug, the same way as [taxonomy terms](#taxonomies):
+
+```hbs
+<section id="{{slugify fm.title}}"> {{!-- "Rust & WebAssembly" -> rust-webassembly --}}
+```
+
+### json
+
+Serializes a value as JSON, with `pretty=true` for indented output. `<`, `>` and `&` are escaped as `\u003c`, `\u003e` and `\u0026`, so the output can be put in a `<script>` element with triple braces:
+
+```toml
+[global.organization]
+"@type" = "Organization"
+name = "Balzac"
+```
+
+```hbs
+<script type="application/ld+json">{{{json organization}}}</script>
+<div data-tags="{{json fm.tags}}"></div>
+```
+
+### sort
+
+Sorts a list by a field, given as a dotted path (`fm.title`), or by value when no field is given. `reverse=true` sorts in descending order. Numbers are compared numerically and text alphabetically; items without the field come last in both orders. The sort is stable:
+
+```hbs
+{{#each (sort collections.docs "fm.weight")}}...{{/each}}
+{{#each (sort fm.tags)}}...{{/each}}
+{{#each (sort collections.posts "fm.title" reverse=true)}}...{{/each}}
+```
+
+### limit
+
+Keeps the first items of a list, after skipping `offset` items:
+
+```hbs
+{{#each (limit collections.posts 3)}}...{{/each}}            {{!-- latest three posts --}}
+{{#each (limit collections.posts 10 offset=3)}}...{{/each}}  {{!-- the next ten --}}
+```
+
+### where
+
+Keeps the items of a list whose field equals a value. When the field is a list, such as tags, items that contain the value are kept. Without a value, items whose field is truthy (not missing, `null`, `false`, `0`, `""` or `[]`) are kept:
+
+```hbs
+{{#each (where collections.posts "fm.tags" "rust")}}...{{/each}}
+{{#each (where collections.posts "fm.featured")}}...{{/each}}
+{{len (where collections.posts "fm.tags" "rust")}} posts about Rust
+```
+
+`sort`, `limit` and `where` treat a missing list as empty.
 
 ## 404 Page
 

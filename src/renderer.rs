@@ -22,20 +22,6 @@ pub trait Renderer {
     fn render_document(&self, body: &str) -> Result<RenderedMarkdown>;
 }
 
-// `{{term_url "tags" this}}` -> `/tags/<term slug>/`; empty, with a warning,
-// for values that never get a term page (missing, null, objects, "!!", ...).
-handlebars::handlebars_helper!(term_url_helper: |taxonomy: str, term: Json| {
-    match crate::listing::term_name(term) {
-        Some(name) if !crate::listing::slugify(&name).is_empty() => {
-            crate::listing::term_url(taxonomy, &name)
-        }
-        _ => {
-            log::warn!("term_url: {term} is not a {taxonomy} term, rendering an empty URL");
-            String::new()
-        }
-    }
-});
-
 pub struct HandlebarsRenderer<'a> {
     pub registry: handlebars::Handlebars<'a>,
     pub tag_templates: HashMap<String, String>,
@@ -175,9 +161,23 @@ impl HandlebarsRenderer<'_> {
             self.registry.register_helper("vite_url", Box::new(helper));
         }
 
-        self.registry
-            .register_helper("term_url", Box::new(term_url_helper));
+        let markdown_renderer = self.markdown_renderer();
+        crate::helpers::register(&mut self.registry, configuration, markdown_renderer);
         Ok(())
+    }
+
+    /// A renderer with this one's markdown options and tag templates, for the
+    /// `markdown` helper. Its registry stays empty: the helper renders tag
+    /// templates with the registry calling it.
+    #[must_use]
+    pub fn markdown_renderer(&self) -> HandlebarsRenderer<'static> {
+        HandlebarsRenderer {
+            registry: Handlebars::new(),
+            tag_templates: self.tag_templates.clone(),
+            markdown: self.markdown.clone(),
+            template_paths: self.template_paths.clone(),
+            tag_template_paths: self.tag_template_paths.clone(),
+        }
     }
 
     fn get_tag_name(value: &NodeValue) -> Option<String> {
@@ -323,6 +323,7 @@ impl HandlebarsRenderer<'_> {
 
     fn apply_tag_templates<'b>(
         &self,
+        registry: &Handlebars<'_>,
         node: &'b AstNode<'b>,
         arena: &'b Arena<AstNode<'b>>,
         options: &Options,
@@ -351,7 +352,7 @@ impl HandlebarsRenderer<'_> {
 
         let mut child = node.first_child();
         while let Some(c) = child {
-            self.apply_tag_templates(c, arena, options, plugins, state)?;
+            self.apply_tag_templates(registry, c, arena, options, plugins, state)?;
             child = c.next_sibling();
         }
 
@@ -390,8 +391,7 @@ impl HandlebarsRenderer<'_> {
                 "content": content,
             });
 
-            let rendered = self
-                .registry
+            let rendered = registry
                 .render_template(template, &template_data)
                 .map_err(|e| {
                     let path = self.tag_template_paths.get(&tag_name).map_or_else(
@@ -414,6 +414,40 @@ impl HandlebarsRenderer<'_> {
         }
 
         Ok(())
+    }
+}
+
+impl HandlebarsRenderer<'_> {
+    /// Renders a markdown string from a template (the `markdown` helper), with
+    /// tag templates rendered by `registry`. With `inline`, a document made of
+    /// a single paragraph is rendered without the `<p>` around it.
+    pub fn render_fragment(
+        &self,
+        registry: &Handlebars<'_>,
+        body: &str,
+        inline: bool,
+    ) -> Result<String> {
+        let arena = Arena::new();
+        let options = crate::collection::build_comrak_options(&self.markdown);
+        let plugins = self.plugins();
+        let root = parse_document(&arena, body, &options);
+
+        if inline
+            && let Some(paragraph) = root.first_child()
+            && paragraph.next_sibling().is_none()
+            && matches!(paragraph.data.borrow().value, NodeValue::Paragraph)
+        {
+            let mut child = paragraph.first_child();
+            while let Some(c) = child {
+                child = c.next_sibling();
+                root.append(c);
+            }
+            paragraph.detach();
+        }
+
+        let mut state = DocumentState::default();
+        self.apply_tag_templates(registry, root, &arena, &options, &plugins, &mut state)?;
+        Ok(Self::format_node(root, &options, &plugins)?)
     }
 }
 
@@ -456,7 +490,7 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
         let excerpt_nodes = markdown::excerpt_nodes(root);
 
         let mut state = DocumentState::default();
-        self.apply_tag_templates(root, &arena, &options, &plugins, &mut state)?;
+        self.apply_tag_templates(&self.registry, root, &arena, &options, &plugins, &mut state)?;
 
         let excerpt = if excerpt_nodes.is_empty() {
             None
