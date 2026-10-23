@@ -121,14 +121,31 @@ The build fails if two page files would write the same file, e.g. `pages/docs/in
 - layouts_directory (optional): directory where layout templates will reside
 - assets_directory (optional): directory where static assets will reside
 - content_directory (optional): directory where content (markdown) will reside
+- tags_directory (optional): directory where markdown tag templates will reside, see [Tag templates](#tag-templates)
 - global: fill this array if you want to have global data available in all the templates and files
 - base_url (optional): the public URL of the site, used for the sitemap and robots.txt
-- sitemap (optional): see `balzac init --sitemap`
+- sitemap (optional): see [Sitemap](#sitemap)
 - robots (optional): see [robots.txt](#robotstxt)
 - listings (optional): paginated collection listings, see [Listings and pagination](#listings-and-pagination)
 - taxonomies (optional): tag/category pages, see [Taxonomies](#taxonomies)
 - markdown (optional): markdown rendering options, see [Markdown](#markdown)
 - url_style (optional): how page URLs map to output files, see [URL Style](#url-style)
+- feed (optional): RSS and Atom feeds for collections, see [Feeds](#feeds)
+- hooks (optional): shell commands run during the build, see [Hooks](#hooks)
+- bundler (optional): asset bundler integration, see [Vite](#vite)
+
+Unknown keys are rejected, so a typo like `ouput_directory` or `[sitemp]` fails the build (and `balzac dev`) with the offending line and a suggestion:
+
+```txt
+TOML parse error at line 3, column 2
+  |
+3 | [sitemp]
+  |  ^^^^^^
+unknown field `sitemp`, expected one of `output_directory`, ...
+help: did you mean `sitemap`?
+```
+
+`global` is the exception: it is free-form, any key goes.
 
 ### URL Style
 
@@ -177,6 +194,22 @@ Templates using `{{vite_url "main.js"}}` will resolve to the Vite dev server in 
 ## 404 Page
 
 Create `pages/404.hbs` (or `.html`/`.handlebars`, or `pages/404/index.hbs`) and it is rendered to `dist/404.html` like any other page. Most static hosts (GitHub Pages, Netlify, Cloudflare Pages, ...) serve this file automatically for missing paths. The 404 page is always left out of the sitemap, and `balzac dev` serves it with a `404` status for any path that doesn't exist.
+
+## Sitemap
+
+When `base_url` is set, Balzac writes a sitemap of all pages, collection items, listings and taxonomy pages. `balzac init --sitemap` sets it up. Optional settings:
+
+```toml
+base_url = "https://example.com"
+
+[sitemap]
+enabled = true              # set to false to skip generating the sitemap
+filename = "sitemap.xml"    # default: sitemap.xml
+default_priority = 0.5      # default: none
+default_changefreq = "weekly" # default: none
+```
+
+Collection items can override these with `priority`, `changefreq` and `lastmod` in their frontmatter, or leave the sitemap with `sitemap_exclude: true`.
 
 ## robots.txt
 
