@@ -1582,3 +1582,255 @@ fn test_add_assets_skips_output_directory_inside_assets_before_it_exists() {
         "Output directory should not be copied into itself"
     );
 }
+
+fn static_page_config(
+    temp_path: &std::path::Path,
+    pages_dir: &std::path::Path,
+    output_dir: &std::path::Path,
+    global: Option<std::collections::HashMap<String, serde_json::Value>>,
+) -> balzac::config::ResolvedConfig {
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        layouts_directory: temp_path.join("layouts").to_string_lossy().to_string(),
+        partials_directory: temp_path.join("partials").to_string_lossy().to_string(),
+        assets_directory: temp_path.join("assets").to_string_lossy().to_string(),
+        content_directory: temp_path.join("content").to_string_lossy().to_string(),
+        tags_directory: "./tags".to_string(),
+        global,
+        hooks: None,
+        bundler: None,
+        base_url: Some("https://example.com".to_string()),
+        sitemap: Some(SitemapConfig::default()),
+        ..Config::default()
+    };
+    config.resolve(temp_path)
+}
+
+#[test]
+fn test_static_page_frontmatter_exposed_as_fm() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    fs::write(
+        pages_dir.join("about.hbs"),
+        "---\ntitle: About us\ntags:\n  - a\n  - b\n---\n<h1>{{fm.title}}</h1>{{#each fm.tags}}<i>{{this}}</i>{{/each}}<p>{{site_name}}</p>",
+    )
+    .expect("Failed to write page");
+
+    let mut global = std::collections::HashMap::new();
+    global.insert("site_name".to_string(), serde_json::json!("Balzac"));
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, Some(global));
+
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
+    assert_eq!(pages[0].frontmatter.as_ref().unwrap()["title"], "About us");
+    render_pages(
+        &resolved_config,
+        &pages,
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+
+    let output = fs::read_to_string(output_dir.join("about.html")).expect("Failed to read output");
+    assert_eq!(output, "<h1>About us</h1><i>a</i><i>b</i><p>Balzac</p>");
+}
+
+#[test]
+fn test_static_page_without_frontmatter_is_unchanged() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    let template = "\n<hr>\n---\n<p>not frontmatter</p>\n---\n";
+    fs::write(pages_dir.join("index.hbs"), template).expect("Failed to write page");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
+    assert!(pages[0].frontmatter.is_none());
+    render_pages(
+        &resolved_config,
+        &pages,
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+
+    let output = fs::read_to_string(output_dir.join("index.html")).expect("Failed to read output");
+    assert_eq!(output, template);
+}
+
+#[test]
+fn test_static_page_invalid_frontmatter_errors() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    fs::write(
+        pages_dir.join("broken.hbs"),
+        "---\ntitle: [unclosed\n---\n<h1>Broken</h1>",
+    )
+    .expect("Failed to write page");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    let err = discover_static_pages(&resolved_config).expect_err("Invalid YAML should fail");
+    assert!(err.to_string().contains("broken.hbs"), "{}", err);
+}
+
+#[test]
+fn test_static_page_frontmatter_sitemap_meta() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    fs::write(
+        pages_dir.join("index.hbs"),
+        "---\nlastmod: \"2024-03-01\"\npriority: 1.0\nchangefreq: daily\n---\n<h1>Home</h1>",
+    )
+    .expect("Failed to write index");
+    fs::write(
+        pages_dir.join("secret.hbs"),
+        "---\nsitemap_exclude: true\n---\n<h1>Secret</h1>",
+    )
+    .expect("Failed to write secret");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages
+        .add_pages(discover_static_pages(&resolved_config).expect("Failed to discover pages"));
+    render_pages(
+        &resolved_config,
+        site_pages.all(),
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+    write_sitemap(&resolved_config, &site_pages).expect("Failed to write sitemap");
+
+    let sitemap =
+        fs::read_to_string(output_dir.join("sitemap.xml")).expect("Failed to read sitemap");
+    assert!(sitemap.contains("<loc>https://example.com/</loc>"));
+    assert!(sitemap.contains("<lastmod>2024-03-01</lastmod>"));
+    assert!(sitemap.contains("<priority>1.0</priority>"));
+    assert!(sitemap.contains("<changefreq>daily</changefreq>"));
+    assert!(!sitemap.contains("/secret"));
+
+    // Excluded pages are still rendered, with frontmatter stripped
+    let secret = fs::read_to_string(output_dir.join("secret.html")).expect("Failed to read page");
+    assert_eq!(secret, "<h1>Secret</h1>");
+}
+
+#[test]
+fn test_render_static_page_from_path_only_entry() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    let source = pages_dir.join("about.hbs");
+    fs::write(&source, "---\ntitle: About\n---\n<h1>{{fm.title}}</h1>")
+        .expect("Failed to write page");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let page = balzac::static_page_entry_from_source(&resolved_config, &source)
+        .expect("Page should map to an entry");
+    balzac::render_static_page(
+        &resolved_config,
+        &page,
+        &HandlebarsRenderer::new(&resolved_config),
+        &serde_json::json!({}),
+    )
+    .expect("Failed to render page");
+
+    let output = fs::read_to_string(output_dir.join("about.html")).expect("Failed to read output");
+    assert_eq!(output, "<h1>About</h1>");
+}
+
+#[test]
+fn test_static_page_edits_after_discovery_are_rendered() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    let source = pages_dir.join("index.hbs");
+    fs::write(&source, "---\ntitle: Old\n---\n<h1>{{fm.title}}</h1>").expect("Failed to write");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
+
+    // Simulates a render_before hook rewriting the page after discovery
+    fs::write(&source, "---\ntitle: New\n---\n<h2>{{fm.title}}</h2>").expect("Failed to write");
+
+    render_pages(
+        &resolved_config,
+        &pages,
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+
+    let output = fs::read_to_string(output_dir.join("index.html")).expect("Failed to read output");
+    assert_eq!(output, "<h2>New</h2>");
+}
+
+#[test]
+fn test_static_page_frontmatter_alongside_collections() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    let content_dir = temp_path.join("content");
+    fs::create_dir(pages_dir.join("posts")).expect("Failed to create posts pages dir");
+    fs::create_dir_all(content_dir.join("posts")).expect("Failed to create posts content dir");
+    fs::write(pages_dir.join("posts").join("details.hbs"), "{{fm.title}}")
+        .expect("Failed to write details template");
+    fs::write(
+        content_dir.join("posts").join("hello.md"),
+        "---\ntitle: Hello\n---\n\nBody",
+    )
+    .expect("Failed to write post");
+    fs::write(
+        pages_dir.join("index.hbs"),
+        "---\nheading: Latest\n---\n<h1>{{fm.heading}}</h1>{{#each collections.posts}}<a href=\"{{url}}\">{{fm.title}}</a>{{/each}}",
+    )
+    .expect("Failed to write index");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages
+        .add_pages(discover_static_pages(&resolved_config).expect("Failed to discover pages"));
+    site_pages
+        .add_pages(discover_collections(&resolved_config).expect("Failed to discover collections"));
+    render_pages(
+        &resolved_config,
+        site_pages.all(),
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+
+    let output = fs::read_to_string(output_dir.join("index.html")).expect("Failed to read output");
+    assert_eq!(output, "<h1>Latest</h1><a href=\"/posts/hello\">Hello</a>");
+}
+
+#[test]
+fn test_not_found_page_with_frontmatter_stays_out_of_sitemap() {
+    let (_temp, temp_path, pages_dir, output_dir, ..) = setup_test_project();
+
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+    fs::write(
+        pages_dir.join("404.hbs"),
+        "---\ntitle: Not found\n---\n<h1>{{fm.title}}</h1>",
+    )
+    .expect("Failed to write 404");
+
+    let resolved_config = static_page_config(&temp_path, &pages_dir, &output_dir, None);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages
+        .add_pages(discover_static_pages(&resolved_config).expect("Failed to discover pages"));
+    render_pages(
+        &resolved_config,
+        site_pages.all(),
+        &HandlebarsRenderer::new(&resolved_config),
+    )
+    .expect("Failed to render static pages");
+    write_sitemap(&resolved_config, &site_pages).expect("Failed to write sitemap");
+
+    let sitemap =
+        fs::read_to_string(output_dir.join("sitemap.xml")).expect("Failed to read sitemap");
+    assert!(!sitemap.contains("404"), "{sitemap}");
+    let not_found = fs::read_to_string(output_dir.join("404.html")).expect("Failed to read 404");
+    assert_eq!(not_found, "<h1>Not found</h1>");
+}

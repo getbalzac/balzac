@@ -8,6 +8,16 @@ pub struct MarkdownOutput {
     pub fm: Value,
 }
 
+/// Splits an optional leading `---` YAML frontmatter block from a template.
+///
+/// Returns `None` and the untouched input when there is no frontmatter block.
+pub fn parse_template_frontmatter(file_content: &str) -> std::io::Result<(Option<Value>, &str)> {
+    match extract_frontmatter(file_content) {
+        (Some(yaml), body) => Ok((Some(parse_yaml_to_json(yaml)?), body)),
+        (None, _) => Ok((None, file_content)),
+    }
+}
+
 pub fn parse_markdown(file_content: &str) -> std::io::Result<MarkdownOutput> {
     let (frontmatter_yaml, markdown_content) = extract_frontmatter(file_content);
 
@@ -29,8 +39,9 @@ fn extract_frontmatter(content: &str) -> (Option<&str>, &str) {
         return (None, content);
     }
 
+    // Keep the newline after the opening "---" so an immediately following
+    // closing "---" (an empty block) is found like any other closing line.
     let after_opening = &content[3..];
-    let after_opening = after_opening.trim_start_matches(['\r', '\n']);
 
     // Find closing "---" that is on its own line (handles both LF and CRLF)
     if let Some(end_pos) = find_closing_delimiter(after_opening) {
@@ -146,11 +157,51 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_frontmatter_block() {
+        let (fm, content) = extract_frontmatter("---\n---\n<h1>Home</h1>");
+        assert_eq!(fm, Some(""));
+        assert_eq!(content, "<h1>Home</h1>");
+
+        let (fm, content) = extract_frontmatter("---\r\n---\r\nContent");
+        assert_eq!(fm, Some(""));
+        assert_eq!(content, "Content");
+    }
+
+    #[test]
+    fn test_parse_template_frontmatter_empty_block_is_stripped() {
+        let (fm, body) = parse_template_frontmatter("---\n---\n<h1>Home</h1>").unwrap();
+        assert!(fm.is_some());
+        assert_eq!(body, "<h1>Home</h1>");
+    }
+
+    #[test]
     fn test_no_frontmatter() {
         let input = "# Just markdown\n\nNo frontmatter here.";
         let (fm, content) = extract_frontmatter(input);
         assert!(fm.is_none());
         assert_eq!(content, input);
+    }
+
+    #[test]
+    fn test_parse_template_frontmatter() {
+        let input = "---\ntitle: About\n---\n<h1>{{fm.title}}</h1>";
+        let (fm, body) = parse_template_frontmatter(input).unwrap();
+        assert_eq!(fm.unwrap()["title"], "About");
+        assert_eq!(body, "<h1>{{fm.title}}</h1>");
+    }
+
+    #[test]
+    fn test_parse_template_frontmatter_without_block_keeps_input() {
+        let input = "\n  <h1>Home</h1>";
+        let (fm, body) = parse_template_frontmatter(input).unwrap();
+        assert!(fm.is_none());
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn test_parse_template_frontmatter_invalid_yaml() {
+        let input = "---\ntitle: [unclosed\n---\n<h1>Home</h1>";
+        assert!(parse_template_frontmatter(input).is_err());
     }
 
     #[test]

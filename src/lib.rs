@@ -133,7 +133,7 @@ pub fn discover_static_pages(
             continue;
         }
 
-        let Some(page) = static_page_entry_from_source(parsed_config, &entry_path) else {
+        let Some(page) = load_static_page_entry(parsed_config, &entry_path)? else {
             continue;
         };
 
@@ -400,6 +400,40 @@ pub fn static_page_entry_from_source(
     })
 }
 
+/// Reads a static page template, splitting off its optional YAML frontmatter.
+fn read_static_page_template(
+    source_path: &Path,
+) -> std::io::Result<(Option<serde_json::Value>, String)> {
+    let file_content = fs::read_to_string(source_path)?;
+    let (frontmatter, template) = collection::parse_template_frontmatter(&file_content)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", source_path.display(), e)))?;
+    Ok((frontmatter, template.to_string()))
+}
+
+/// Builds a static page entry, parsing its frontmatter for sitemap metadata.
+///
+/// The template itself is not cached: `render_static_page` re-reads the source
+/// so edits made after discovery (e.g. by a `render_before` hook) are rendered.
+pub fn load_static_page_entry(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> std::io::Result<Option<PageEntry>> {
+    let Some(mut page) = static_page_entry_from_source(parsed_config, source_path) else {
+        return Ok(None);
+    };
+
+    let (frontmatter, _) = read_static_page_template(source_path)?;
+    if let Some(fm) = &frontmatter {
+        // keep exclusions decided from the path (e.g. the not-found page)
+        let excluded_by_path = page.sitemap_meta.exclude;
+        page.sitemap_meta = SitemapMeta::from_frontmatter(fm);
+        page.sitemap_meta.exclude |= excluded_by_path;
+    }
+    page.frontmatter = frontmatter;
+
+    Ok(Some(page))
+}
+
 pub fn collection_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
@@ -473,14 +507,12 @@ pub fn render_static_page(
         )
     );
 
-    let content = fs::read_to_string(&page.source_path)?;
-    let rendered = render.render(
-        content,
-        merge_contexts(
-            parsed_config,
-            &serde_json::json!({"collections": collections}),
-        ),
-    );
+    let (frontmatter, template) = read_static_page_template(&page.source_path)?;
+    let mut local_context = serde_json::json!({ "collections": collections });
+    if let Some(fm) = frontmatter {
+        local_context["fm"] = fm;
+    }
+    let rendered = render.render(template, merge_contexts(parsed_config, &local_context));
     fs::write(&page.output_path, rendered)?;
     Ok(())
 }
