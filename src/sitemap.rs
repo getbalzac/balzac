@@ -129,7 +129,7 @@ pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &Sitemap
     for page in site_pages.sitemap_pages() {
         xml.push_str("  <url>\n");
 
-        let full_url = format!("{}{}", base_url, page.url_path);
+        let full_url = format!("{}{}", base_url, encode_url_path(&page.url_path));
         let _ = writeln!(xml, "    <loc>{}</loc>", escape_xml(&full_url));
 
         if let Some(ref lastmod) = page.sitemap_meta.lastmod {
@@ -155,6 +155,21 @@ pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &Sitemap
 
     xml.push_str("</urlset>\n");
     xml
+}
+
+/// Percent-encodes a page's `url_path` for publishing: `/docs/c#` becomes
+/// `/docs/c%23` and `/tags/économie/` becomes `/tags/%C3%A9conomie/`.
+/// Unreserved characters, sub-delimiters, `:`, `@` and `/` are kept as is.
+fn encode_url_path(url_path: &str) -> String {
+    let mut encoded = String::with_capacity(url_path.len());
+    for byte in url_path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 /// Escapes XML special characters and drops characters that XML 1.0 forbids
@@ -279,6 +294,19 @@ mod tests {
         assert!(xml.contains("<changefreq>daily</changefreq>"));
         // The excluded page should not be in the sitemap
         assert!(!xml.contains("/about"));
+    }
+
+    #[test]
+    fn test_encode_url_path() {
+        assert_eq!(
+            encode_url_path("/docs/getting-started"),
+            "/docs/getting-started"
+        );
+        assert_eq!(encode_url_path("/docs/c#"), "/docs/c%23");
+        assert_eq!(encode_url_path("/posts/part one"), "/posts/part%20one");
+        assert_eq!(encode_url_path("/posts/100%"), "/posts/100%25");
+        assert_eq!(encode_url_path("/tags/économie/"), "/tags/%C3%A9conomie/");
+        assert_eq!(encode_url_path("/a?b"), "/a%3Fb");
     }
 
     #[test]
