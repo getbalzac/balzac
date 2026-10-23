@@ -1418,6 +1418,60 @@ partials_directory = "./partials"
     }
 
     #[test]
+    fn test_process_changes_copies_new_nested_asset() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("assets/img")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+assets_directory = "./assets"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>home</h1>").unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+        session.full_rebuild().unwrap();
+        let before = capture_snapshot(&session.resolved_config).unwrap();
+
+        fs::create_dir_all(root.join("assets/img/icons")).unwrap();
+        fs::write(root.join("assets/img/icons/logo.svg"), "<svg/>").unwrap();
+        let after = capture_snapshot(&session.resolved_config).unwrap();
+        let changes = diff_snapshots(&before, &after);
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.path == root.join("assets/img/icons/logo.svg")),
+            "Nested asset file should be detected as a change"
+        );
+
+        let messages = session.process_changes(&changes).unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/img/icons/logo.svg")).unwrap(),
+            "<svg/>"
+        );
+    }
+
+    #[test]
+    fn test_classify_nested_asset_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.assets_directory.join("img").join("logo.png"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
     fn test_classify_tag_template_change_as_full_reload() {
         let (_temp_dir, config) = setup_dev_project();
         let change = SourceChange {
