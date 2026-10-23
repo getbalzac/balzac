@@ -65,9 +65,8 @@ pub fn init(path: &Path, features: &[InitFeature]) {
 
 pub fn build(path: &Path) {
     let start = std::time::Instant::now();
-    let config_path = path.join("balzac.toml");
-    let config_content = fs::read_to_string(&config_path).expect("Config file not found");
-    let parsed_config: Config = toml::from_str(&config_content).expect("Could not parse config");
+    let parsed_config =
+        Config::load(path).unwrap_or_else(|e| fail("Error loading configuration", &e));
     log::info!("Parsed configuration file (took {:?})", start.elapsed());
 
     let resolved_config = parsed_config.resolve(path);
@@ -77,7 +76,9 @@ pub fn build(path: &Path) {
 
     let start = std::time::Instant::now();
     let mut render: HandlebarsRenderer<'_> = HandlebarsRenderer::new(&resolved_config);
-    render.init(&resolved_config);
+    if let Err(e) = render.init(&resolved_config) {
+        fail("Error initializing renderer", &e);
+    }
     log::info!("Renderer is initialized (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::RenderInitAfter);
@@ -196,6 +197,11 @@ fn build_feeds(
         std::process::exit(1);
     }
     log::info!("Generated feeds (took {:?})", start.elapsed());
+}
+
+fn fail(context: &str, error: &crate::error::Error) -> ! {
+    log::error!("{context}: {error}");
+    std::process::exit(1);
 }
 
 pub fn dev(path: &Path, host: &str, port: u16) {

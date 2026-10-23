@@ -11,18 +11,20 @@ pub struct MarkdownOutput {
 /// Splits an optional leading `---` YAML frontmatter block from a template.
 ///
 /// Returns `None` and the untouched input when there is no frontmatter block.
-pub fn parse_template_frontmatter(file_content: &str) -> std::io::Result<(Option<Value>, &str)> {
+pub fn parse_template_frontmatter(
+    file_content: &str,
+) -> Result<(Option<Value>, &str), serde_yaml::Error> {
     match extract_frontmatter(file_content) {
-        (Some(yaml), body) => Ok((Some(parse_yaml_to_json(yaml)?), body)),
+        (Some(yaml), body) => Ok((Some(serde_yaml::from_str(yaml)?), body)),
         (None, _) => Ok((None, file_content)),
     }
 }
 
-pub fn parse_markdown(file_content: &str) -> std::io::Result<MarkdownOutput> {
+pub fn parse_markdown(file_content: &str) -> Result<MarkdownOutput, serde_yaml::Error> {
     let (frontmatter_yaml, markdown_content) = extract_frontmatter(file_content);
 
     let fm = match frontmatter_yaml {
-        Some(yaml) => parse_yaml_to_json(yaml)?,
+        Some(yaml) => serde_yaml::from_str(yaml)?,
         None => json!(null),
     };
 
@@ -88,15 +90,6 @@ fn find_closing_delimiter(content: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn parse_yaml_to_json(yaml: &str) -> std::io::Result<Value> {
-    serde_yaml::from_str(yaml).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Could not parse frontmatter YAML: {e}"),
-        )
-    })
 }
 
 #[must_use]

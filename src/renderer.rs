@@ -1,22 +1,25 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{Anchorizer, Arena, Options, Plugins, format_html_with_plugins, parse_document};
-use handlebars::Handlebars;
+use handlebars::{Handlebars, RenderErrorReason};
 
 use crate::{
     config,
+    error::{self, Error, Result},
     markdown::{self, ClassHighlighter, RenderedMarkdown, TocEntry},
     vite::{ViteAssetSource, parse_manifest, vite_url},
 };
 
 pub trait Renderer {
     fn new(configuration: &config::ResolvedConfig) -> Self;
-    fn init(&mut self, configuration: &config::ResolvedConfig);
-    fn render(&self, template: String, data: serde_json::Value) -> String;
-    fn render_markdown(&self, body: &str) -> std::io::Result<String>;
-    fn render_document(&self, body: &str) -> std::io::Result<RenderedMarkdown>;
+    fn init(&mut self, configuration: &config::ResolvedConfig) -> Result<()>;
+    /// Renders `template`, the content of the file at `path`.
+    fn render(&self, path: &Path, template: String, data: serde_json::Value) -> Result<String>;
+    fn render_markdown(&self, body: &str) -> Result<String>;
+    fn render_document(&self, body: &str) -> Result<RenderedMarkdown>;
 }
 
 // `{{term_url "tags" this}}` -> `/tags/<term slug>/`; empty, with a warning,
@@ -37,6 +40,22 @@ pub struct HandlebarsRenderer<'a> {
     pub registry: handlebars::Handlebars<'a>,
     pub tag_templates: HashMap<String, String>,
     pub markdown: config::MarkdownConfig,
+    /// Files of the registered partials and layouts, by name, for error messages.
+    template_paths: HashMap<String, PathBuf>,
+    /// Files of the tag templates, by tag name, for error messages.
+    tag_template_paths: HashMap<String, PathBuf>,
+}
+
+/// Converts a handlebars parse error of the template at `path`.
+fn template_error(path: &Path, error: &handlebars::TemplateError) -> Error {
+    let (line, column) = error.pos().unzip();
+    Error::Template {
+        path: path.to_path_buf(),
+        line,
+        column,
+        message: error.reason().to_string(),
+        page: None,
+    }
 }
 
 /// Per-document state collected while transforming the markdown AST.
@@ -47,85 +66,99 @@ struct DocumentState {
 }
 
 impl HandlebarsRenderer<'_> {
-    fn register_partials(&mut self, configuration: &config::ResolvedConfig) {
-        let partial_dir_exists = fs::exists(&configuration.partials_directory)
-            .expect("Could not check if partial dir exists");
-        if partial_dir_exists {
-            for entry in fs::read_dir(&configuration.partials_directory)
-                .expect("Could not read partials directory")
-            {
-                let dir = entry.expect("Could not get directory handler");
-                log::debug!("Parsing partial {}", dir.file_name().to_string_lossy());
-                let partial_path = dir.path();
-                let partial_content =
-                    fs::read_to_string(&partial_path).expect("Cannot read partial file content");
-                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
-                self.registry
-                    .register_partial(&partial_name.to_string_lossy(), partial_content)
-                    .expect("Cannot register partial");
-            }
+    fn register_partials(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        if fs::exists(&configuration.partials_directory)? {
+            self.register_partial_dir(&configuration.partials_directory)?;
         } else {
             log::debug!("Could not find partial directory, skipping register step");
         }
+        Ok(())
     }
 
-    fn register_layouts(&mut self, configuration: &config::ResolvedConfig) {
-        let layouts_dir_exists = fs::exists(&configuration.layouts_directory)
-            .expect("Could not check if partial layouts dir exists");
-
-        if layouts_dir_exists {
-            for entry in fs::read_dir(&configuration.layouts_directory)
-                .expect("Could not read layouts directory")
-            {
-                let dir = entry.expect("Could not get directory handler");
-                log::debug!("Parsing partial {}", dir.file_name().to_string_lossy());
-                let partial_path = dir.path();
-                let partial_content =
-                    fs::read_to_string(&partial_path).expect("Cannot read layout file content");
-                let partial_name = &partial_path.file_stem().expect("Could not get file stem");
-                self.registry
-                    .register_partial(&partial_name.to_string_lossy(), partial_content)
-                    .expect("Cannot register layout");
-            }
+    fn register_layouts(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        if fs::exists(&configuration.layouts_directory)? {
+            self.register_partial_dir(&configuration.layouts_directory)?;
         } else {
             log::debug!("Could not find layouts directory, skipping register step");
         }
+        Ok(())
     }
 
-    fn register_tag_templates(&mut self, configuration: &config::ResolvedConfig) {
-        let tags_dir_exists =
-            fs::exists(&configuration.tags_directory).expect("Could not check if tags dir exists");
-
-        if tags_dir_exists {
-            for entry in
-                fs::read_dir(&configuration.tags_directory).expect("Could not read tags directory")
-            {
-                let dir = entry.expect("Could not get directory handler");
-                let path = dir.path();
-                let extension = path.extension().map(|e| e.to_string_lossy().to_string());
-                if extension.as_deref() != Some("hbs") {
-                    log::debug!(
-                        "Skipping non-hbs file {} in tags directory",
-                        dir.file_name().to_string_lossy()
-                    );
-                    continue;
-                }
-                let template_content =
-                    fs::read_to_string(&path).expect("Cannot read tag template file content");
-                let tag_name = path
-                    .file_stem()
-                    .expect("Could not get file stem")
-                    .to_string_lossy()
-                    .to_string();
-                log::debug!("Registering tag template for <{tag_name}>");
-                self.tag_templates.insert(tag_name, template_content);
-            }
-        } else {
-            log::debug!("Could not find tags directory, skipping tag templates");
+    /// Registers every file of `directory` as a partial named after its file stem.
+    fn register_partial_dir(&mut self, directory: &Path) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let dir = entry?;
+            log::debug!("Parsing partial {}", dir.file_name().to_string_lossy());
+            let partial_path = dir.path();
+            let partial_content = error::read_to_string(&partial_path)?;
+            let Some(partial_name) = partial_path.file_stem() else {
+                continue;
+            };
+            let partial_name = partial_name.to_string_lossy().to_string();
+            self.registry
+                .register_partial(&partial_name, partial_content)
+                .map_err(|e| template_error(&partial_path, &e))?;
+            self.template_paths.insert(partial_name, partial_path);
         }
+        Ok(())
     }
 
-    pub fn register_helpers(&mut self, configuration: &config::ResolvedConfig) {
+    fn register_tag_templates(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        if !fs::exists(&configuration.tags_directory)? {
+            log::debug!("Could not find tags directory, skipping tag templates");
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(&configuration.tags_directory)? {
+            let dir = entry?;
+            let path = dir.path();
+            let extension = path.extension().map(|e| e.to_string_lossy().to_string());
+            if extension.as_deref() != Some("hbs") {
+                log::debug!(
+                    "Skipping non-hbs file {} in tags directory",
+                    dir.file_name().to_string_lossy()
+                );
+                continue;
+            }
+            let template_content = error::read_to_string(&path)?;
+            // Tag templates are rendered on demand; parse them now so syntax
+            // errors are reported up front with their file.
+            handlebars::Template::compile(&template_content)
+                .map_err(|e| template_error(&path, &e))?;
+            let Some(tag_name) = path.file_stem() else {
+                continue;
+            };
+            let tag_name = tag_name.to_string_lossy().to_string();
+            log::debug!("Registering tag template for <{tag_name}>");
+            self.tag_templates
+                .insert(tag_name.clone(), template_content);
+            self.tag_template_paths.insert(tag_name, path);
+        }
+        Ok(())
+    }
+
+    /// Converts a handlebars render error of the template at `path` into an
+    /// error pointing at the file it happened in: `path` itself or one of the
+    /// partials it uses.
+    fn render_error(&self, path: &Path, error: &handlebars::RenderError) -> Error {
+        if let RenderErrorReason::TemplateError(e) = error.reason() {
+            return template_error(path, e);
+        }
+        let partial_path = error
+            .template_name
+            .as_ref()
+            .and_then(|name| self.template_paths.get(name));
+        let error = Error::Template {
+            path: partial_path.map_or_else(|| path.to_path_buf(), Clone::clone),
+            line: error.line_no,
+            column: error.column_no,
+            message: error.reason().to_string(),
+            page: None,
+        };
+        error.in_page(path)
+    }
+
+    pub fn register_helpers(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
         if let Some(bundler) = &configuration.bundler
             && let Some(vite) = &bundler.vite
             && vite.enabled
@@ -135,10 +168,7 @@ impl HandlebarsRenderer<'_> {
             } else {
                 let manifest_path = std::path::PathBuf::from(&vite.manifest_path);
                 let manifest = parse_manifest(manifest_path, &configuration.root_directory)
-                    .unwrap_or_else(|e| {
-                        log::error!("{e}");
-                        std::process::exit(1);
-                    });
+                    .map_err(Error::Vite)?;
                 ViteAssetSource::Manifest(manifest)
             };
             let helper = vite_url { asset_source };
@@ -147,6 +177,7 @@ impl HandlebarsRenderer<'_> {
 
         self.registry
             .register_helper("term_url", Box::new(term_url_helper));
+        Ok(())
     }
 
     fn get_tag_name(value: &NodeValue) -> Option<String> {
@@ -297,7 +328,7 @@ impl HandlebarsRenderer<'_> {
         options: &Options,
         plugins: &Plugins,
         state: &mut DocumentState,
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         // Heading text is collected before children are replaced by tag templates.
         let heading_level = match &node.data.borrow().value {
             NodeValue::Heading(h) => Some(h.level),
@@ -363,10 +394,11 @@ impl HandlebarsRenderer<'_> {
                 .registry
                 .render_template(template, &template_data)
                 .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("Tag template render error for <{tag_name}>: {e}"),
-                    )
+                    let path = self.tag_template_paths.get(&tag_name).map_or_else(
+                        || PathBuf::from(format!("<{tag_name}> tag template")),
+                        Clone::clone,
+                    );
+                    self.render_error(&path, &e)
                 })?;
 
             // Detach remaining children (they were already moved to temp_root during
@@ -386,11 +418,11 @@ impl HandlebarsRenderer<'_> {
 }
 
 impl<'a> Renderer for HandlebarsRenderer<'a> {
-    fn init(&mut self, configuration: &config::ResolvedConfig) {
-        self.register_partials(configuration);
-        self.register_layouts(configuration);
-        self.register_tag_templates(configuration);
-        self.register_helpers(configuration);
+    fn init(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        self.register_partials(configuration)?;
+        self.register_layouts(configuration)?;
+        self.register_tag_templates(configuration)?;
+        self.register_helpers(configuration)
     }
     fn new(configuration: &config::ResolvedConfig) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();
@@ -399,19 +431,21 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
             registry: reg,
             tag_templates: HashMap::new(),
             markdown: configuration.markdown.clone(),
+            template_paths: HashMap::new(),
+            tag_template_paths: HashMap::new(),
         }
     }
-    fn render(&self, template: String, data: serde_json::Value) -> String {
+    fn render(&self, path: &Path, template: String, data: serde_json::Value) -> Result<String> {
         self.registry
             .render_template(&template, &data)
-            .expect("Could not render template")
+            .map_err(|e| self.render_error(path, &e))
     }
 
-    fn render_markdown(&self, body: &str) -> std::io::Result<String> {
+    fn render_markdown(&self, body: &str) -> Result<String> {
         self.render_document(body).map(|document| document.html)
     }
 
-    fn render_document(&self, body: &str) -> std::io::Result<RenderedMarkdown> {
+    fn render_document(&self, body: &str) -> Result<RenderedMarkdown> {
         let arena = Arena::new();
         let options = crate::collection::build_comrak_options(&self.markdown);
         let plugins = self.plugins();
@@ -453,20 +487,27 @@ mod tests {
             registry: reg,
             tag_templates: HashMap::new(),
             markdown: config::MarkdownConfig::default(),
+            template_paths: HashMap::new(),
+            tag_template_paths: HashMap::new(),
         }
     }
 
     #[test]
     fn test_term_url_helper() {
         let mut renderer = create_renderer();
-        renderer.register_helpers(&config::Config::default().resolve(std::path::Path::new(".")));
+        renderer
+            .register_helpers(&config::Config::default().resolve(std::path::Path::new(".")))
+            .unwrap();
         let data = serde_json::json!({"tags": ["Web Dev", 2024, "!!"]});
 
-        let result = renderer.render(
-            "{{#each tags}}[{{term_url \"tags\" this}}]{{/each}}[{{term_url \"tags\" missing}}]"
-                .to_string(),
-            data,
-        );
+        let result = renderer
+            .render(
+                Path::new("test.hbs"),
+                "{{#each tags}}[{{term_url \"tags\" this}}]{{/each}}[{{term_url \"tags\" missing}}]"
+                    .to_string(),
+                data,
+            )
+            .unwrap();
         assert_eq!(result, "[/tags/web-dev/][/tags/2024/][][]");
     }
 
@@ -476,7 +517,9 @@ mod tests {
         let template = "Hello, World!".to_string();
         let data = serde_json::json!({});
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "Hello, World!");
     }
 
@@ -488,7 +531,9 @@ mod tests {
             "name": "Alice"
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "Hello, Alice!");
     }
 
@@ -502,7 +547,9 @@ mod tests {
             "site": "Balzac"
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "Hello Bob, welcome to Balzac!");
     }
 
@@ -517,7 +564,9 @@ mod tests {
             }
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "Author: Jane Doe (jane@example.com)");
     }
 
@@ -529,7 +578,9 @@ mod tests {
             "is_active": true
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "Active");
     }
 
@@ -541,7 +592,9 @@ mod tests {
             "items": ["Rust", "Handlebars", "SSG"]
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "- Rust\n- Handlebars\n- SSG\n");
     }
 
@@ -553,7 +606,9 @@ mod tests {
             "unused": "data"
         });
 
-        let result = renderer.render(template, data);
+        let result = renderer
+            .render(Path::new("test.hbs"), template, data)
+            .unwrap();
         assert_eq!(result, "");
     }
 

@@ -93,7 +93,9 @@ fn test_partials_registration() {
 
     let resolved_config = config.resolve(&temp_path);
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
 
     assert!(
         renderer.registry.get_templates().contains_key("alert"),
@@ -137,7 +139,9 @@ fn test_partials_registration_without_folder() {
 
     let resolved_config = config.resolve(&temp_path);
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
 
     assert!(
         renderer.registry.get_templates().is_empty(),
@@ -948,7 +952,9 @@ fn test_custom_tag_renderer_for_links() {
         discover_collections(&resolved_config).expect("Failed to discover collections");
 
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
     render_collection_items(&resolved_config, &collection_pages, &renderer)
         .expect("Failed to render collections");
 
@@ -1293,7 +1299,9 @@ per_page = 1
 
     let site_pages = discover_site_pages(&resolved_config).expect("Failed to discover pages");
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
     render_pages(&resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
     render_collection_items(&resolved_config, site_pages.all(), &renderer)
         .expect("Failed to render collections");
@@ -1436,7 +1444,10 @@ fn test_directory_url_style_static_page_colliding_with_listing_fails() {
         .expect("Failed to parse config");
     let error = discover_site_pages(&config.resolve(root))
         .expect_err("pages/posts.hbs and the posts listing both write posts/index.html");
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        matches!(&error, balzac::error::Error::Io(e) if e.kind() == std::io::ErrorKind::InvalidInput),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -1493,7 +1504,9 @@ fn test_markdown_extras_in_collection_details() {
     let collection_pages =
         discover_collections(&resolved_config).expect("Failed to discover collections");
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
     render_collection_items(&resolved_config, &collection_pages, &renderer)
         .expect("Failed to render collections");
     balzac::markdown::write_highlight_css(&resolved_config).expect("Failed to write theme css");
@@ -2137,7 +2150,9 @@ fn build_feeds(base_url: Option<&str>, feed: FeedConfig) -> (TempDir, PathBuf) {
     site_pages
         .add_pages(discover_collections(&resolved_config).expect("Failed to discover collections"));
     let mut renderer = HandlebarsRenderer::new(&resolved_config);
-    renderer.init(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
     write_feeds(&resolved_config, &site_pages, &renderer).expect("Failed to write feeds");
 
     (temp, output_dir)

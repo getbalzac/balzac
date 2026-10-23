@@ -370,6 +370,16 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Reads and parses the `balzac.toml` of the project at `root`.
+    pub fn load(root: &Path) -> crate::error::Result<Self> {
+        let path = root.join("balzac.toml");
+        let content = crate::error::read_to_string(&path)?;
+        toml::from_str(&content).map_err(|e| crate::error::Error::Config {
+            path,
+            message: e.to_string(),
+        })
+    }
+
     #[must_use]
     pub fn resolve(&self, root: &std::path::Path) -> ResolvedConfig {
         ResolvedConfig {

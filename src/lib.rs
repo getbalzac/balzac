@@ -3,6 +3,7 @@ pub mod collection;
 pub mod config;
 pub mod context;
 pub mod dev;
+pub mod error;
 pub mod feed;
 pub mod hooks;
 pub mod listing;
@@ -20,6 +21,7 @@ use std::{
 
 use crate::{
     context::{build_collections_context, merge_contexts},
+    error::{Error, Result},
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
     url::{PageLocation, page_location},
@@ -125,9 +127,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std
     Ok(())
 }
 
-pub fn discover_static_pages(
-    parsed_config: &config::ResolvedConfig,
-) -> std::io::Result<Vec<PageEntry>> {
+pub fn discover_static_pages(parsed_config: &config::ResolvedConfig) -> Result<Vec<PageEntry>> {
     let mut pages = Vec::new();
 
     let dir_exists = fs::exists(&parsed_config.pages_directory)?;
@@ -176,9 +176,7 @@ pub fn discover_static_pages(
     Ok(pages)
 }
 
-pub fn discover_collections(
-    parsed_config: &config::ResolvedConfig,
-) -> std::io::Result<Vec<PageEntry>> {
+pub fn discover_collections(parsed_config: &config::ResolvedConfig) -> Result<Vec<PageEntry>> {
     let mut pages = Vec::new();
 
     let dir_exists = fs::exists(&parsed_config.content_directory)?;
@@ -248,7 +246,7 @@ pub fn discover_collections(
 /// Discovers every page of the site: static pages, collection items and the
 /// generated listing pages. Fails before anything is rendered if two pages, or
 /// a page and a copied asset, would be written to the same file.
-pub fn discover_site_pages(parsed_config: &config::ResolvedConfig) -> std::io::Result<SitePages> {
+pub fn discover_site_pages(parsed_config: &config::ResolvedConfig) -> Result<SitePages> {
     let mut pages = discover_static_pages(parsed_config)?;
     pages.extend(discover_collections(parsed_config)?);
     let listing_pages = listing::discover_listings(parsed_config, &pages)?;
@@ -266,7 +264,8 @@ pub fn discover_site_pages(parsed_config: &config::ResolvedConfig) -> std::io::R
                 page.url_path,
                 page.output_path.display()
             ),
-        ));
+        )
+        .into());
     }
 
     let mut site_pages = SitePages::new();
@@ -279,7 +278,7 @@ pub fn render_pages(
     parsed_config: &config::ResolvedConfig,
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let collections = build_collections_context(pages, render)?;
 
     for page in pages {
@@ -297,7 +296,7 @@ pub fn render_collection_items(
     parsed_config: &config::ResolvedConfig,
     pages: &[PageEntry],
     render: &HandlebarsRenderer,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let collections = build_collections_context(pages, render)?;
     let mut created_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -402,7 +401,7 @@ pub fn write_feeds(
     parsed_config: &config::ResolvedConfig,
     site_pages: &SitePages,
     render: &HandlebarsRenderer,
-) -> std::io::Result<Vec<PathBuf>> {
+) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     let Some(feed_config) = &parsed_config.feed else {
         return Ok(written);
@@ -512,7 +511,7 @@ fn write_feed_files(
     collection: Option<&str>,
     title: &str,
     description: Option<&str>,
-) -> std::io::Result<Vec<PathBuf>> {
+) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     let (Some(feed_config), Some(base_url)) = (&parsed_config.feed, &parsed_config.base_url) else {
         return Ok(written);
@@ -524,7 +523,11 @@ fn write_feed_files(
         .map(|&entry| {
             let content_html = if feed_config.full_content {
                 let body = entry.page.content.as_deref().unwrap_or_default();
-                Some(render.render_markdown(body)?)
+                Some(
+                    render
+                        .render_markdown(body)
+                        .map_err(|e| e.in_page(&entry.page.source_path))?,
+                )
             } else {
                 None
             };
@@ -533,7 +536,7 @@ fn write_feed_files(
                 content_html,
             })
         })
-        .collect::<std::io::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
 
     let (output_dir, url_dir) = match collection {
         Some(collection) => (
@@ -612,11 +615,19 @@ pub fn static_page_entry_from_source(
 /// Reads a static page template, splitting off its optional YAML frontmatter.
 fn read_static_page_template(
     source_path: &Path,
-) -> std::io::Result<(Option<serde_json::Value>, String)> {
-    let file_content = fs::read_to_string(source_path)?;
-    let (frontmatter, template) = collection::parse_template_frontmatter(&file_content)
-        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", source_path.display(), e)))?;
-    Ok((frontmatter, template.to_string()))
+) -> Result<(Option<serde_json::Value>, String, usize)> {
+    let file_content = error::read_to_string(source_path)?;
+    let (frontmatter, template) =
+        collection::parse_template_frontmatter(&file_content).map_err(|e| Error::Frontmatter {
+            path: source_path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    // `template` is the end of `file_content`; count the lines before it so
+    // template errors point at lines of the file
+    let frontmatter_lines = file_content[..file_content.len() - template.len()]
+        .matches('\n')
+        .count();
+    Ok((frontmatter, template.to_string(), frontmatter_lines))
 }
 
 /// Builds a static page entry, parsing its frontmatter for sitemap metadata.
@@ -626,12 +637,12 @@ fn read_static_page_template(
 pub fn load_static_page_entry(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
-) -> std::io::Result<Option<PageEntry>> {
+) -> Result<Option<PageEntry>> {
     let Some(mut page) = static_page_entry_from_source(parsed_config, source_path) else {
         return Ok(None);
     };
 
-    let (frontmatter, _) = read_static_page_template(source_path)?;
+    let (frontmatter, _, _) = read_static_page_template(source_path)?;
     if let Some(fm) = &frontmatter {
         // keep exclusions decided from the path (e.g. the not-found page)
         let excluded_by_path = page.sitemap_meta.exclude;
@@ -646,7 +657,7 @@ pub fn load_static_page_entry(
 pub fn collection_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
-) -> std::io::Result<Option<PageEntry>> {
+) -> Result<Option<PageEntry>> {
     let Some((collection_name, location)) =
         collection_location_from_source(parsed_config, source_path)
     else {
@@ -661,8 +672,12 @@ pub fn collection_entry_from_source(
         return Ok(None);
     }
 
-    let file_content = fs::read_to_string(source_path)?;
-    let parsed_content = collection::parse_markdown(&file_content)?;
+    let file_content = error::read_to_string(source_path)?;
+    let parsed_content =
+        collection::parse_markdown(&file_content).map_err(|e| Error::Frontmatter {
+            path: source_path.to_path_buf(),
+            message: e.to_string(),
+        })?;
     let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
 
     Ok(Some(PageEntry {
@@ -683,7 +698,7 @@ pub fn render_static_page(
     page: &PageEntry,
     render: &HandlebarsRenderer,
     collections: &serde_json::Value,
-) -> std::io::Result<()> {
+) -> Result<()> {
     log::info!(
         "Rendering page {}",
         page.source_path.file_name().map_or_else(
@@ -692,12 +707,18 @@ pub fn render_static_page(
         )
     );
 
-    let (frontmatter, template) = read_static_page_template(&page.source_path)?;
+    let (frontmatter, template, frontmatter_lines) = read_static_page_template(&page.source_path)?;
     let mut local_context = serde_json::json!({ "collections": collections });
     if let Some(fm) = frontmatter {
         local_context["fm"] = fm;
     }
-    let rendered = render.render(template, merge_contexts(parsed_config, &local_context));
+    let rendered = render
+        .render(
+            &page.source_path,
+            template,
+            merge_contexts(parsed_config, &local_context),
+        )
+        .map_err(|e| e.offset_lines(&page.source_path, frontmatter_lines))?;
     create_parent_dir(&page.output_path)?;
     fs::write(&page.output_path, rendered)?;
     Ok(())
@@ -708,14 +729,15 @@ pub fn render_collection_page(
     page: &PageEntry,
     render: &HandlebarsRenderer,
     collections: &serde_json::Value,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let collection_name = match &page.page_type {
         PageType::Collection { name } => name,
         PageType::Static | PageType::Listing(_) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "render_collection_page expects a collection entry",
-            ));
+            )
+            .into());
         }
     };
 
@@ -736,22 +758,25 @@ pub fn render_collection_page(
 
     let document = render
         .render_document(raw_content)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        .map_err(|e| e.in_page(&page.source_path))?;
 
-    let rendered_result = render.render(
-        fs::read_to_string(&details_page_path)?,
-        merge_contexts(
-            parsed_config,
-            &serde_json::json!({
-                "content": document.html,
-                "fm": frontmatter,
-                "toc": document.toc,
-                "toc_html": document.toc_html,
-                "excerpt": document.excerpt,
-                "collections": collections,
-            }),
-        ),
-    );
+    let rendered_result = render
+        .render(
+            &details_page_path,
+            error::read_to_string(&details_page_path)?,
+            merge_contexts(
+                parsed_config,
+                &serde_json::json!({
+                    "content": document.html,
+                    "fm": frontmatter,
+                    "toc": document.toc,
+                    "toc_html": document.toc_html,
+                    "excerpt": document.excerpt,
+                    "collections": collections,
+                }),
+            ),
+        )
+        .map_err(|e| e.in_page(&page.source_path))?;
 
     fs::write(&page.output_path, &rendered_result)?;
     Ok(())
