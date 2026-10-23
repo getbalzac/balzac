@@ -96,6 +96,24 @@ fn default_robots_enabled() -> bool {
     true
 }
 
+/// How page URLs map to files in the output directory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UrlStyle {
+    /// `about` is written to `about.html` and linked as `/about`.
+    /// Requires a host that rewrites extensionless URLs (Netlify, Vercel, Cloudflare).
+    #[default]
+    Extensionless,
+    /// `about` is written to `about/index.html` and linked as `/about/`.
+    /// Works on any static host (S3, GitHub Pages, nginx defaults).
+    Directory,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // signature required by serde's skip_serializing_if
+fn is_default_url_style(style: &UrlStyle) -> bool {
+    *style == UrlStyle::default()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -209,6 +227,8 @@ pub struct Config {
     pub sitemap: Option<SitemapConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub robots: Option<RobotsConfig>,
+    #[serde(default, skip_serializing_if = "is_default_url_style")]
+    pub url_style: UrlStyle,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub listings: HashMap<String, ListingConfig>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -232,6 +252,7 @@ impl Default for Config {
             base_url: None,
             sitemap: None,
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         }
@@ -257,6 +278,7 @@ impl Config {
             base_url: self.base_url.clone(),
             sitemap: self.sitemap.clone(),
             robots: self.robots.clone(),
+            url_style: self.url_style,
             listings: self.listings.clone(),
             taxonomies: self.taxonomies.clone(),
             dev_mode: false,
@@ -286,6 +308,7 @@ pub struct ResolvedConfig {
     pub base_url: Option<String>,
     pub sitemap: Option<SitemapConfig>,
     pub robots: Option<RobotsConfig>,
+    pub url_style: UrlStyle,
     pub listings: HashMap<String, ListingConfig>,
     pub taxonomies: HashMap<String, TaxonomyConfig>,
     pub dev_mode: bool,
@@ -448,6 +471,7 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         };
@@ -471,6 +495,7 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         };
@@ -498,6 +523,7 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         };
@@ -531,6 +557,7 @@ mod tests {
             base_url: None,
             sitemap: None,
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         };
@@ -563,6 +590,7 @@ mod tests {
                 default_changefreq: Some("weekly".to_string()),
             }),
             robots: None,
+            url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
         };
