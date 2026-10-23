@@ -44,23 +44,24 @@ pub fn build_collections_context(
 ) -> std::io::Result<serde_json::Value> {
     let mut collections: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
-    for page in pages {
+    let mut items: Vec<&PageEntry> = pages
+        .iter()
+        .filter(|page| matches!(page.page_type, PageType::Collection { .. }))
+        .collect();
+    items.sort_by(|a, b| compare_collection_items(a, b));
+
+    for page in items {
         let PageType::Collection { name } = &page.page_type else {
             continue;
         };
 
-        let slug = page
-            .source_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
         let content = match &page.content {
             Some(raw_content) => render.render_markdown(raw_content)?,
             None => String::new(),
         };
         let item = serde_json::json!({
             "url": page.url_path,
-            "slug": slug,
+            "slug": item_slug(page),
             "fm": page.frontmatter.clone().unwrap_or(serde_json::Value::Null),
             "content": content,
         });
@@ -73,21 +74,22 @@ pub fn build_collections_context(
             .push(item);
     }
 
-    for items in collections.values_mut() {
-        if let serde_json::Value::Array(items) = items {
-            items.sort_by(compare_collection_items);
-        }
-    }
-
     Ok(serde_json::Value::Object(collections))
 }
 
-fn compare_collection_items(a: &serde_json::Value, b: &serde_json::Value) -> Ordering {
-    fn date(item: &serde_json::Value) -> Option<&str> {
-        item["fm"]["date"].as_str()
-    }
-    fn slug(item: &serde_json::Value) -> &str {
-        item["slug"].as_str().unwrap_or_default()
+fn item_slug(page: &PageEntry) -> String {
+    page.source_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Order of collection items everywhere they are listed: `fm.date` descending
+/// (dated items first), then slug ascending.
+#[must_use]
+pub fn compare_collection_items(a: &PageEntry, b: &PageEntry) -> Ordering {
+    fn date(page: &PageEntry) -> Option<&str> {
+        page.frontmatter.as_ref()?.get("date")?.as_str()
     }
 
     match (date(a), date(b)) {
@@ -96,7 +98,7 @@ fn compare_collection_items(a: &serde_json::Value, b: &serde_json::Value) -> Ord
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
-    .then_with(|| slug(a).cmp(slug(b)))
+    .then_with(|| a.source_path.file_stem().cmp(&b.source_path.file_stem()))
 }
 
 #[cfg(test)]

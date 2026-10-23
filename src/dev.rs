@@ -10,15 +10,16 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::config::{Config, ResolvedConfig, UrlStyle};
+use crate::config::{Config, ResolvedConfig};
 use crate::context::build_collections_context;
+use crate::listing::render_listing_pages;
 use crate::renderer::{HandlebarsRenderer, Renderer};
-use crate::sitemap::SitePages;
+use crate::sitemap::{PageType, SitePages};
 use crate::{
-    NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_location_from_source, discover_collections,
-    discover_static_pages, is_supported_page_file, make_dist_folder, remove_output_for_source,
-    render_collection_items, render_pages, render_static_page, static_page_entry_from_source,
-    write_robots, write_sitemap,
+    NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_output_path_from_source,
+    discover_collections, discover_site_pages, is_supported_page_file, make_dist_folder,
+    remove_output_for_source, render_collection_items, render_pages, render_static_page,
+    static_page_entry_from_source, write_robots, write_sitemap,
 };
 
 const SSE_ENDPOINT: &str = "/__balzac/events";
@@ -100,14 +101,18 @@ pub fn run(root: &Path, host: &str, port: u16) -> std::io::Result<()> {
 struct DevSession {
     root: PathBuf,
     resolved_config: ResolvedConfig,
+    /// Output files of the generated listing pages from the last render, so
+    /// pages that are no longer generated can be removed.
+    listing_outputs: BTreeSet<PathBuf>,
 }
 
 impl DevSession {
     fn new(root: &Path) -> std::io::Result<Self> {
         let (parsed_config, resolved_config) = load_config(root)?;
-        let session = Self {
+        let mut session = Self {
             root: root.to_path_buf(),
             resolved_config,
+            listing_outputs: BTreeSet::new(),
         };
         DevSession::log_ignored_hooks(&parsed_config);
         session.build_current_config()?;
@@ -182,35 +187,52 @@ impl DevSession {
         self.build_current_config()
     }
 
-    fn build_current_config(&self) -> std::io::Result<()> {
+    fn build_current_config(&mut self) -> std::io::Result<()> {
         make_dist_folder(&self.resolved_config)?;
+        self.listing_outputs.clear();
         self.render_site()?;
         write_robots(&self.resolved_config)?;
         add_assets(&self.resolved_config)?;
         Ok(())
     }
 
-    fn render_site(&self) -> std::io::Result<()> {
+    fn render_site(&mut self) -> std::io::Result<()> {
         let renderer = self.create_renderer();
-        let static_pages = discover_static_pages(&self.resolved_config)?;
-        let collection_pages = discover_collections(&self.resolved_config)?;
-
-        let mut site_pages = SitePages::new();
-        site_pages.add_pages(static_pages);
-        site_pages.add_pages(collection_pages);
+        let site_pages = discover_site_pages(&self.resolved_config)?;
 
         render_pages(&self.resolved_config, site_pages.all(), &renderer)?;
         render_collection_items(&self.resolved_config, site_pages.all(), &renderer)?;
+        render_listing_pages(&self.resolved_config, site_pages.all(), &renderer)?;
+        self.prune_stale_listings(&site_pages)?;
         write_sitemap(&self.resolved_config, &site_pages)
     }
 
+    /// Removes listing pages rendered previously but no longer generated, e.g.
+    /// a term whose last item was untagged, or a page beyond the new last page.
+    fn prune_stale_listings(&mut self, site_pages: &SitePages) -> std::io::Result<()> {
+        let listing_outputs: BTreeSet<PathBuf> = site_pages
+            .all()
+            .iter()
+            .filter(|page| matches!(page.page_type, PageType::Listing(_)))
+            .map(|page| page.output_path.clone())
+            .collect();
+
+        for stale in self.listing_outputs.difference(&listing_outputs) {
+            if fs::exists(stale)? {
+                fs::remove_file(stale)?;
+            }
+            remove_empty_parents(stale, &self.resolved_config.output_directory)?;
+        }
+
+        self.listing_outputs = listing_outputs;
+        Ok(())
+    }
+
     fn refresh_sitemap(&self) -> std::io::Result<()> {
-        let static_pages = discover_static_pages(&self.resolved_config)?;
-        let collection_pages = discover_collections(&self.resolved_config)?;
-        let mut site_pages = SitePages::new();
-        site_pages.add_pages(static_pages);
-        site_pages.add_pages(collection_pages);
-        write_sitemap(&self.resolved_config, &site_pages)
+        write_sitemap(
+            &self.resolved_config,
+            &discover_site_pages(&self.resolved_config)?,
+        )
     }
 
     fn create_renderer(&self) -> HandlebarsRenderer<'static> {
@@ -350,12 +372,12 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
         if relative_path.components().count() == 2
             && change.path.extension().and_then(|ext| ext.to_str()) == Some("md")
         {
-            if let Some((_, location)) = collection_location_from_source(config, &change.path) {
+            if let Some((url_path, output_path)) = collection_target_paths(config, &change.path) {
                 return ChangePlan::Targeted(vec![TargetedChange {
                     kind: TargetKind::CollectionItem,
                     source_path: change.path.clone(),
-                    output_path: location.output_path,
-                    url_path: location.url_path,
+                    output_path,
+                    url_path,
                     change_type: change.change_type.clone(),
                 }]);
             }
@@ -366,6 +388,42 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
     }
 
     ChangePlan::None
+}
+
+fn collection_target_paths(
+    config: &ResolvedConfig,
+    source_path: &Path,
+) -> Option<(String, PathBuf)> {
+    let relative_path = source_path.strip_prefix(&config.content_directory).ok()?;
+    let mut components = relative_path.components();
+    let collection_name = components.next()?.as_os_str().to_string_lossy().to_string();
+    let file_name = components.next()?.as_os_str().to_string_lossy().to_string();
+    if components.next().is_some() {
+        return None;
+    }
+
+    let slug = Path::new(&file_name)
+        .file_stem()?
+        .to_string_lossy()
+        .to_string();
+    let output_path = collection_output_path_from_source(config, source_path)?;
+    Some((format!("/{collection_name}/{slug}"), output_path))
+}
+
+/// Removes the now-empty directories between `path` and `root` (exclusive).
+fn remove_empty_parents(path: &Path, root: &Path) -> std::io::Result<()> {
+    let mut directory = path.parent();
+    while let Some(current) = directory {
+        if current == root || !current.starts_with(root) || !current.is_dir() {
+            break;
+        }
+        if fs::read_dir(current)?.next().is_some() {
+            break;
+        }
+        fs::remove_dir(current)?;
+        directory = current.parent();
+    }
+    Ok(())
 }
 
 fn is_under(path: &Path, root: &Path) -> bool {
@@ -483,9 +541,6 @@ fn handle_connection(
     let config_guard = config
         .read()
         .expect("dev config lock should not be poisoned");
-    if let Some(location) = directory_redirect(&config_guard, &path) {
-        return write_redirect(stream, &location);
-    }
     let response = build_file_response(&config_guard, &path)?;
     write_response(
         stream,
@@ -611,62 +666,21 @@ fn write_response(
     stream.flush()
 }
 
-fn write_redirect(mut stream: TcpStream, location: &str) -> std::io::Result<()> {
-    stream.write_all(redirect_headers(location).as_bytes())?;
-    stream.flush()
-}
-
-// Temporary and uncached: a permanent redirect would outlive a `url_style` switch
-// or a page turning back into a file, since browsers cache 301s indefinitely.
-fn redirect_headers(location: &str) -> String {
-    format!(
-        "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    )
-}
-
-/// With directory-style URLs, mirror static hosts by redirecting `/about` to `/about/`
-/// so relative links resolve the same way in dev as in production.
-fn directory_redirect(config: &ResolvedConfig, request_path: &str) -> Option<String> {
-    if config.url_style != UrlStyle::Directory {
-        return None;
-    }
-
-    let (path, query) = match request_path.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (request_path, None),
-    };
-    if path.ends_with('/') {
-        return None;
-    }
-
-    let relative = sanitize_relative_path(path.trim_start_matches('/'))?;
-    let candidate = config.output_directory.join(&relative);
-    if relative.as_os_str().is_empty()
-        || candidate.is_file()
-        || !candidate.join("index.html").is_file()
-    {
-        return None;
-    }
-
-    // Rebuild the location from the sanitized path: echoing the request could turn
-    // `//about` into a protocol-relative redirect to another host.
-    let segments: Vec<_> = relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect();
-    let location = format!("/{}/", segments.join("/"));
-    Some(match query {
-        Some(query) => format!("{location}?{query}"),
-        None => location,
-    })
-}
-
 fn should_include_response_body(method: &str) -> bool {
     method != "HEAD"
 }
 
+/// Resolves the request path percent-decoded first (browsers encode e.g.
+/// non-ASCII terms), then as-is, since collection URLs come from file names
+/// that may themselves contain `%`.
 fn resolve_output_path(output_root: &Path, request_path: &str) -> Option<PathBuf> {
     let path = request_path.split('?').next().unwrap_or("/");
+    percent_decode(path)
+        .and_then(|decoded| resolve_decoded_path(output_root, &decoded))
+        .or_else(|| resolve_decoded_path(output_root, path))
+}
+
+fn resolve_decoded_path(output_root: &Path, path: &str) -> Option<PathBuf> {
     let trimmed = path.trim_start_matches('/');
 
     if trimmed.is_empty() {
@@ -676,18 +690,49 @@ fn resolve_output_path(output_root: &Path, request_path: &str) -> Option<PathBuf
 
     let relative = sanitize_relative_path(trimmed)?;
     let candidate = output_root.join(&relative);
+    // `/posts/` is a directory URL (e.g. a listing), even if `posts.html` exists.
+    if path.ends_with('/') {
+        let index_candidate = candidate.join("index.html");
+        if index_candidate.is_file() {
+            return Some(index_candidate);
+        }
+    }
     if candidate.is_file() {
         return Some(candidate);
     }
-    // Append rather than replace the extension so `/about.en` finds `about.en.html`.
-    let mut html_candidate = candidate.clone().into_os_string();
-    html_candidate.push(".html");
-    let html_candidate = PathBuf::from(html_candidate);
-    if html_candidate.is_file() {
-        return Some(html_candidate);
+    if candidate.extension().is_none() {
+        let html_candidate = candidate.with_extension("html");
+        if html_candidate.is_file() {
+            return Some(html_candidate);
+        }
+        let index_candidate = candidate.join("index.html");
+        if index_candidate.is_file() {
+            return Some(index_candidate);
+        }
     }
-    let index_candidate = candidate.join("index.html");
-    index_candidate.is_file().then_some(index_candidate)
+
+    None
+}
+
+/// Decodes `%XX` escapes (e.g. non-ASCII taxonomy terms); `None` when malformed.
+fn percent_decode(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn sanitize_relative_path(path: &str) -> Option<PathBuf> {
@@ -1069,18 +1114,55 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_output_path_supports_dotted_extensionless_urls() {
+    fn test_resolve_output_path_prefers_directory_index_for_trailing_slash() {
         let (_temp_dir, config) = setup_dev_project();
-        fs::create_dir_all(&config.output_directory).unwrap();
-        fs::write(config.output_directory.join("about.en.html"), "").unwrap();
+        fs::create_dir_all(config.output_directory.join("posts")).unwrap();
+        fs::write(config.output_directory.join("posts.html"), "page").unwrap();
+        fs::write(config.output_directory.join("posts/index.html"), "list").unwrap();
 
         assert_eq!(
-            resolve_output_path(&config.output_directory, "/about.en"),
-            Some(config.output_directory.join("about.en.html"))
+            resolve_output_path(&config.output_directory, "/posts/").unwrap(),
+            config.output_directory.join("posts/index.html")
         );
         assert_eq!(
-            resolve_output_path(&config.output_directory, "/about"),
+            resolve_output_path(&config.output_directory, "/posts").unwrap(),
+            config.output_directory.join("posts.html")
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_decodes_percent_escapes() {
+        let (_temp_dir, config) = setup_dev_project();
+        let term_dir = config.output_directory.join("tags/économie");
+        fs::create_dir_all(&term_dir).unwrap();
+        fs::write(term_dir.join("index.html"), "term").unwrap();
+
+        assert_eq!(
+            resolve_output_path(&config.output_directory, "/tags/%C3%A9conomie/").unwrap(),
+            term_dir.join("index.html")
+        );
+        assert_eq!(
+            resolve_output_path(&config.output_directory, "/tags/%2E%2E/%2E%2E/x"),
             None
+        );
+        assert_eq!(resolve_output_path(&config.output_directory, "/%zz"), None);
+    }
+
+    #[test]
+    fn test_resolve_output_path_falls_back_to_raw_path_with_percent_signs() {
+        let (_temp_dir, config) = setup_dev_project();
+        let posts = config.output_directory.join("posts");
+        fs::create_dir_all(&posts).unwrap();
+        fs::write(posts.join("100%.html"), "malformed escape").unwrap();
+        fs::write(posts.join("part%20one.html"), "valid escape").unwrap();
+
+        assert_eq!(
+            resolve_output_path(&config.output_directory, "/posts/100%").unwrap(),
+            posts.join("100%.html")
+        );
+        assert_eq!(
+            resolve_output_path(&config.output_directory, "/posts/part%20one").unwrap(),
+            posts.join("part%20one.html")
         );
     }
 
@@ -1358,11 +1440,13 @@ partials_directory = "./partials"
         );
     }
 
-    fn setup_directory_style_session() -> (TempDir, DevSession) {
+    #[test]
+    fn test_process_changes_updates_and_prunes_listing_pages() {
         let temp_dir = TempDir::new().unwrap();
         let root = temp_dir.path();
 
         fs::create_dir_all(root.join("pages/posts")).unwrap();
+        fs::create_dir_all(root.join("pages/tags")).unwrap();
         fs::create_dir_all(root.join("content/posts")).unwrap();
         fs::write(
             root.join("balzac.toml"),
@@ -1370,217 +1454,94 @@ partials_directory = "./partials"
 output_directory = "./dist"
 pages_directory = "./pages"
 content_directory = "./content"
-url_style = "directory"
+base_url = "https://example.com"
+
+[listings.posts]
+per_page = 1
+
+[taxonomies.tags]
 "#,
         )
         .unwrap();
-        fs::write(root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
-        fs::write(root.join("pages/about.hbs"), "<h1>About v1</h1>").unwrap();
+        fs::write(root.join("pages/posts/details.hbs"), "{{fm.title}}").unwrap();
         fs::write(
-            root.join("pages/posts/details.hbs"),
-            "<h1>{{fm.title}}</h1>{{{content}}}",
+            root.join("pages/posts/list.hbs"),
+            "{{#each pagination.items}}[{{fm.title}}]{{/each}}",
         )
         .unwrap();
         fs::write(
-            root.join("content/posts/post-1.md"),
-            "---\ntitle: First\n---\n\nOne",
+            root.join("pages/tags/term.hbs"),
+            "{{#each pagination.items}}[{{fm.title}}]{{/each}}",
+        )
+        .unwrap();
+        fs::write(
+            root.join("content/posts/a.md"),
+            "---\ntitle: A\ntags: [rust]\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("content/posts/b.md"),
+            "---\ntitle: B\ntags: [rust, web]\n---\n",
         )
         .unwrap();
 
-        let session = DevSession::new(root).unwrap();
-        (temp_dir, session)
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/page/2/index.html")).unwrap(),
+            "[B]"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/tags/web/index.html")).unwrap(),
+            "[B]"
+        );
+
+        fs::write(
+            root.join("content/posts/a.md"),
+            "---\ntitle: A2\ntags: [rust]\n---\n",
+        )
+        .unwrap();
+        fs::remove_file(root.join("content/posts/b.md")).unwrap();
+        let messages = session
+            .process_changes(&[
+                SourceChange {
+                    path: root.join("content/posts/a.md"),
+                    change_type: ChangeType::Modified,
+                    is_dir: false,
+                },
+                SourceChange {
+                    path: root.join("content/posts/b.md"),
+                    change_type: ChangeType::Deleted,
+                    is_dir: false,
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/index.html")).unwrap(),
+            "[A2]"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/tags/rust/index.html")).unwrap(),
+            "[A2]"
+        );
+        assert!(!root.join("dist/posts/page").exists());
+        assert!(!root.join("dist/tags/web").exists());
+        let sitemap = fs::read_to_string(root.join("dist/sitemap.xml")).unwrap();
+        assert!(sitemap.contains("https://example.com/tags/rust/"));
+        assert!(!sitemap.contains("/tags/web/"));
+        assert!(!sitemap.contains("/posts/page/2/"));
     }
 
     #[test]
-    fn test_directory_style_classifies_with_trailing_slash_urls() {
-        let (_temp_dir, session) = setup_directory_style_session();
-        let config = &session.resolved_config;
+    fn test_classify_listing_template_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
         let change = SourceChange {
-            path: config.content_directory.join("posts/post-1.md"),
+            path: config.pages_directory.join("tags").join("term.hbs"),
             change_type: ChangeType::Modified,
             is_dir: false,
         };
 
-        assert_eq!(
-            classify_changes(config, &[change]),
-            ChangePlan::Targeted(vec![TargetedChange {
-                kind: TargetKind::CollectionItem,
-                source_path: config.content_directory.join("posts/post-1.md"),
-                output_path: config.output_directory.join("posts/post-1/index.html"),
-                url_path: "/posts/post-1/".to_string(),
-                change_type: ChangeType::Modified,
-            }])
-        );
-    }
-
-    #[test]
-    fn test_directory_style_targeted_rebuilds() {
-        let (temp_dir, mut session) = setup_directory_style_session();
-        let root = temp_dir.path();
-        assert!(root.join("dist/about/index.html").is_file());
-        assert!(root.join("dist/posts/post-1/index.html").is_file());
-        assert!(!root.join("dist/about.html").exists());
-
-        fs::write(root.join("pages/about.hbs"), "<h1>About v2</h1>").unwrap();
-        let messages = session
-            .process_changes(&[SourceChange {
-                path: root.join("pages/about.hbs"),
-                change_type: ChangeType::Modified,
-                is_dir: false,
-            }])
-            .unwrap();
-        assert_eq!(messages, vec![ReloadMessage::targeted("/about/")]);
-        assert_eq!(
-            fs::read_to_string(root.join("dist/about/index.html")).unwrap(),
-            "<h1>About v2</h1>"
-        );
-
-        fs::write(
-            root.join("content/posts/post-1.md"),
-            "---\ntitle: First Updated\n---\n\nTwo",
-        )
-        .unwrap();
-        session
-            .process_changes(&[SourceChange {
-                path: root.join("content/posts/post-1.md"),
-                change_type: ChangeType::Modified,
-                is_dir: false,
-            }])
-            .unwrap();
-        assert!(
-            fs::read_to_string(root.join("dist/posts/post-1/index.html"))
-                .unwrap()
-                .contains("First Updated")
-        );
-    }
-
-    #[test]
-    fn test_directory_style_new_page_and_deletion() {
-        let (temp_dir, mut session) = setup_directory_style_session();
-        let root = temp_dir.path();
-
-        fs::write(root.join("pages/contact.hbs"), "<h1>Contact</h1>").unwrap();
-        session
-            .process_changes(&[SourceChange {
-                path: root.join("pages/contact.hbs"),
-                change_type: ChangeType::Created,
-                is_dir: false,
-            }])
-            .unwrap();
-        assert!(root.join("dist/contact/index.html").is_file());
-
-        fs::remove_file(root.join("pages/contact.hbs")).unwrap();
-        let messages = session
-            .process_changes(&[SourceChange {
-                path: root.join("pages/contact.hbs"),
-                change_type: ChangeType::Deleted,
-                is_dir: false,
-            }])
-            .unwrap();
-        assert_eq!(messages, vec![ReloadMessage::targeted("/contact/")]);
-        assert!(!root.join("dist/contact").exists());
-
-        fs::remove_file(root.join("content/posts/post-1.md")).unwrap();
-        session
-            .process_changes(&[SourceChange {
-                path: root.join("content/posts/post-1.md"),
-                change_type: ChangeType::Deleted,
-                is_dir: false,
-            }])
-            .unwrap();
-        assert!(!root.join("dist/posts/post-1").exists());
-        assert!(root.join("dist/about/index.html").is_file());
-        assert!(root.join("dist/index.html").is_file());
-    }
-
-    #[test]
-    fn test_directory_style_serving_and_redirects() {
-        let (_temp_dir, session) = setup_directory_style_session();
-        let config = &session.resolved_config;
-        let output = &config.output_directory;
-
-        assert_eq!(
-            resolve_output_path(output, "/about/"),
-            Some(output.join("about/index.html"))
-        );
-        assert_eq!(
-            resolve_output_path(output, "/posts/post-1/?ref=x"),
-            Some(output.join("posts/post-1/index.html"))
-        );
-        assert_eq!(
-            directory_redirect(config, "/about"),
-            Some("/about/".to_string())
-        );
-        assert_eq!(
-            directory_redirect(config, "/posts/post-1?ref=x"),
-            Some("/posts/post-1/?ref=x".to_string())
-        );
-        assert_eq!(directory_redirect(config, "/about/"), None);
-        assert_eq!(directory_redirect(config, "/"), None);
-        assert_eq!(directory_redirect(config, "/missing"), None);
-        assert_eq!(directory_redirect(config, "/index.html"), None);
-        assert_eq!(
-            directory_redirect(config, "//about"),
-            Some("/about/".to_string()),
-            "redirect must stay on the dev server"
-        );
-        assert_eq!(directory_redirect(config, "/."), None);
-    }
-
-    #[test]
-    fn test_redirect_is_temporary_and_uncached() {
-        let headers = redirect_headers("/about/");
-        assert!(headers.starts_with("HTTP/1.1 307 Temporary Redirect\r\n"));
-        assert!(headers.contains("\r\nLocation: /about/\r\n"));
-        assert!(headers.contains("\r\nCache-Control: no-store\r\n"));
-        assert!(headers.ends_with("\r\n\r\n"));
-    }
-
-    #[test]
-    fn test_directory_style_serves_dotted_page_names() {
-        let (temp_dir, mut session) = setup_directory_style_session();
-        let root = temp_dir.path();
-        fs::write(root.join("pages/about.en.hbs"), "<h1>About EN</h1>").unwrap();
-        session
-            .process_changes(&[SourceChange {
-                path: root.join("pages/about.en.hbs"),
-                change_type: ChangeType::Created,
-                is_dir: false,
-            }])
-            .unwrap();
-
-        let output = &session.resolved_config.output_directory;
-        assert_eq!(
-            resolve_output_path(output, "/about.en/"),
-            Some(output.join("about.en/index.html"))
-        );
-        assert_eq!(
-            directory_redirect(&session.resolved_config, "/about.en"),
-            Some("/about.en/".to_string())
-        );
-    }
-
-    #[test]
-    fn test_deleting_item_of_unrendered_collection_is_a_no_op() {
-        let (temp_dir, mut session) = setup_directory_style_session();
-        let root = temp_dir.path();
-        // `drafts` has no details.hbs, so its items were never rendered.
-        fs::create_dir_all(root.join("content/drafts")).unwrap();
-
-        let messages = session.process_changes(&[SourceChange {
-            path: root.join("content/drafts/wip.md"),
-            change_type: ChangeType::Deleted,
-            is_dir: false,
-        }]);
-        assert!(messages.is_ok(), "{messages:?}");
-    }
-
-    #[test]
-    fn test_extensionless_style_never_redirects() {
-        let (_temp_dir, config) = setup_dev_project();
-        fs::create_dir_all(config.output_directory.join("docs")).unwrap();
-        fs::write(config.output_directory.join("docs/index.html"), "").unwrap();
-
-        assert_eq!(directory_redirect(&config, "/docs"), None);
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
     }
 }

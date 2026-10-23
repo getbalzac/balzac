@@ -3,11 +3,16 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::config::SitemapConfig;
+use crate::listing::ListingPage;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageType {
     Static,
-    Collection { name: String },
+    Collection {
+        name: String,
+    },
+    /// Generated page: collection listing, taxonomy term or taxonomy index.
+    Listing(Box<ListingPage>),
 }
 
 #[derive(Debug, Clone, Default)]

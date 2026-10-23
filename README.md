@@ -65,7 +65,7 @@ balzac dev --root ./my-site
 Current behavior:
 
 - direct changes to top-level files in `pages/` trigger a targeted rebuild and reload only for that page
-- direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`) and trigger a full-page reload, without recreating the output directory
+- direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; listing pages that are no longer generated (e.g. a tag with no posts left) are removed
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
 - hooks are ignored in dev mode
 - missing paths are answered with a `404` status and your `404.html` page if you have one (see [404 Page](#404-page)), otherwise plain text
@@ -95,26 +95,8 @@ Balzac supports different directories that you are free to create or skip:
 - base_url (optional): the public URL of the site, used for the sitemap and robots.txt
 - sitemap (optional): see `balzac init --sitemap`
 - robots (optional): see [robots.txt](#robotstxt)
-- url_style (optional): how page URLs map to output files, see [URL Style](#url-style)
-
-### URL Style
-
-`url_style` controls where pages are written and which URLs are used for them (including in the sitemap and the dev server).
-
-| `url_style`               | `pages/about.hbs`        | `content/posts/foo.md`       |
-| ------------------------- | ------------------------ | ---------------------------- |
-| `"extensionless"` (default) | `dist/about.html` → `/about` | `dist/posts/foo.html` → `/posts/foo` |
-| `"directory"`             | `dist/about/index.html` → `/about/` | `dist/posts/foo/index.html` → `/posts/foo/` |
-
-```toml
-url_style = "directory"
-```
-
-- `extensionless` needs a host that serves `about.html` for `/about` (Netlify, Vercel, Cloudflare Pages).
-- `directory` works on any static host (S3, GitHub Pages, nginx defaults).
-- `pages/index.hbs` is always written to `dist/index.html` and served at `/`.
-- With `directory`, a top-level `pages/404.hbs` stays at `dist/404.html` so hosts can find the error page.
-- With `directory`, `balzac dev` redirects `/about` to `/about/`, as static hosts do.
+- listings (optional): paginated collection listings, see [Listings and pagination](#listings-and-pagination)
+- taxonomies (optional): tag/category pages, see [Taxonomies](#taxonomies)
 
 ### Vite
 
@@ -240,6 +222,81 @@ Items are sorted by `fm.date` (compared as text, so use ISO dates like `2025-01-
 ```
 
 Only collections that have a `details.hbs` page are included.
+
+### Listings and pagination
+
+To generate a listing of a collection, add a `[listings.<collection>]` table to `balzac.toml` and create `pages/<collection>/list.hbs`:
+
+```toml
+[listings.posts]
+per_page = 10 # optional, all items go on a single page when omitted
+```
+
+This renders `/posts/`, `/posts/page/2/`, `/posts/page/3/`, ... (written to `posts/index.html`, `posts/page/2/index.html`, ...). Items are in the same order as `collections.<name>`.
+
+Listings are configured in `balzac.toml` rather than in a page's frontmatter because their URLs come from the collection, not from a page file, and because taxonomy pages (below) have no page of their own to hold frontmatter, so both are configured the same way.
+
+`list.hbs` receives `collection` (the collection name), `collections`, the `global` data and a `pagination` object:
+
+- `items`: the items on this page, shaped like `collections.<name>` items (`url`, `slug`, `fm`, `content`)
+- `current_page`, `total_pages` (1-based), `per_page`, `total_items`
+- `prev_url`, `next_url`: URL of the previous/next page, `null` on the first/last page
+- `first_url`, `last_url`
+- `pages`: every page as `{ number, url, current }`, for numbered navigation
+
+```hbs
+{{#each pagination.items}}
+  <a href="{{url}}">{{fm.title}}</a>
+{{/each}}
+<nav>
+  {{#if pagination.prev_url}}<a href="{{pagination.prev_url}}">Newer</a>{{/if}}
+  {{#each pagination.pages}}
+    {{#if current}}<span>{{number}}</span>{{else}}<a href="{{url}}">{{number}}</a>{{/if}}
+  {{/each}}
+  {{#if pagination.next_url}}<a href="{{pagination.next_url}}">Older</a>{{/if}}
+</nav>
+```
+
+An empty collection still renders its first page, with no items.
+
+### Taxonomies
+
+A taxonomy groups collection items by a frontmatter key. Add a `[taxonomies.<key>]` table and create `pages/<key>/term.hbs`:
+
+```toml
+[taxonomies.tags]
+per_page = 10            # optional, all items go on a single page when omitted
+collections = ["posts"]  # optional, every collection when omitted
+
+[taxonomies.categories]
+```
+
+```md
+---
+title: "Hello"
+tags: [Rust, Web Dev]
+categories: tutorials # a single term works too
+---
+```
+
+Each term gets a paginated page at `/<key>/<term>/`, `/<key>/<term>/page/2/`, ... The term is slugified in URLs: it is lowercased and each run of characters that are not letters or digits becomes `-`, so `Web Dev` becomes `/tags/web-dev/`. Terms with the same slug are merged. `term.hbs` receives `pagination` (as above), `collections`, and `taxonomy`:
+
+- `taxonomy.name`: the taxonomy (e.g. `tags`)
+- `taxonomy.term`: `{ name, slug, url, count }`, where `name` is the term as first written in frontmatter
+
+If `pages/<key>/taxonomy.hbs` exists, an index of all terms is rendered at `/<key>/`. It receives `taxonomy.name` and `taxonomy.terms`, a list of `{ name, slug, url, count, items }` sorted by slug.
+
+Link to a term page from any template with the `term_url` helper:
+
+```hbs
+{{#each fm.tags}}<a href="{{term_url "tags" this}}">{{this}}</a>{{/each}}
+```
+
+A value that can never be a term (missing, `null`, or no letters or digits) renders an empty URL and logs a warning. Otherwise `term_url` only builds the URL and does not check that the page exists: a term used only on items outside the taxonomy's `collections`, or a taxonomy without `term.hbs`, gets a link with no page behind it.
+
+The build fails if two pages would be written to the same file, e.g. a `content/posts/index.md` item and the `/posts/` listing, or a `[listings.posts]` listing and a `[taxonomies.posts]` index.
+
+Listing and taxonomy pages are added to the sitemap.
 
 ## Development
 
