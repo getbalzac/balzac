@@ -1,4 +1,6 @@
 use comrak::Options;
+
+use crate::config::MarkdownConfig;
 use serde_json::{Value, json};
 
 pub struct MarkdownOutput {
@@ -87,13 +89,14 @@ fn parse_yaml_to_json(yaml: &str) -> std::io::Result<Value> {
 }
 
 #[must_use]
-pub fn build_comrak_options() -> Options<'static> {
+pub fn build_comrak_options(markdown: &MarkdownConfig) -> Options<'static> {
     let mut options = Options::default();
 
     options.extension.strikethrough = true;
     options.extension.table = true;
     options.extension.autolink = true;
     options.extension.tasklist = true;
+    options.extension.footnotes = markdown.footnotes;
     options.render.unsafe_ = true;
 
     options

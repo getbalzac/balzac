@@ -61,7 +61,42 @@ impl Default for RobotsConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // independent on/off switches mirroring balzac.toml keys
+pub struct MarkdownConfig {
+    /// Highlight fenced code blocks with CSS classes (`hl-*`)
+    #[serde(default = "default_true")]
+    pub syntax_highlighting: bool,
+    /// Bundled syntect theme written to `<output>/highlight.css`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight_theme: Option<String>,
+    /// Render `id` attributes on headings
+    #[serde(default)]
+    pub heading_ids: bool,
+    /// Render a `#` link inside headings (implies `heading_ids`)
+    #[serde(default)]
+    pub heading_anchors: bool,
+    #[serde(default)]
+    pub footnotes: bool,
+}
+
+impl Default for MarkdownConfig {
+    fn default() -> Self {
+        Self {
+            syntax_highlighting: true,
+            highlight_theme: None,
+            heading_ids: false,
+            heading_anchors: false,
+            footnotes: false,
+        }
+    }
+}
+
 fn default_robots_enabled() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -161,6 +196,8 @@ pub struct Config {
     )]
     pub tags_directory: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<MarkdownConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<HashMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
@@ -188,6 +225,7 @@ impl Default for Config {
             assets_directory: default_assets_directory(),
             content_directory: default_content_directory(),
             tags_directory: default_tags_directory(),
+            markdown: None,
             global: None,
             hooks: None,
             bundler: None,
@@ -212,6 +250,7 @@ impl Config {
             assets_directory: Self::resolve_path(&self.assets_directory, root),
             content_directory: Self::resolve_path(&self.content_directory, root),
             tags_directory: Self::resolve_path(&self.tags_directory, root),
+            markdown: self.markdown.clone().unwrap_or_default(),
             global: self.global.clone(),
             hooks: self.hooks.clone(),
             bundler: self.bundler.clone(),
@@ -240,6 +279,7 @@ pub struct ResolvedConfig {
     pub assets_directory: std::path::PathBuf,
     pub content_directory: std::path::PathBuf,
     pub tags_directory: std::path::PathBuf,
+    pub markdown: MarkdownConfig,
     pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub hooks: Option<Hooks>,
     pub bundler: Option<Bundler>,
@@ -401,6 +441,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            markdown: None,
             global: None,
             hooks: None,
             bundler: None,
@@ -423,6 +464,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            markdown: None,
             global: None,
             hooks: None,
             bundler: None,
@@ -449,6 +491,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            markdown: None,
             global: Some(global),
             hooks: None,
             bundler: None,
@@ -481,6 +524,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            markdown: None,
             global: None,
             hooks: None,
             bundler: None,
@@ -507,6 +551,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            markdown: None,
             global: None,
             hooks: None,
             bundler: None,
@@ -610,5 +655,28 @@ mod tests {
         let sitemap = deserialized.sitemap.unwrap();
         assert!(sitemap.enabled);
         assert_eq!(sitemap.default_priority, Some(0.8));
+    }
+
+    #[test]
+    fn test_markdown_config_defaults() {
+        let parsed: Config = toml::from_str("").unwrap();
+        assert!(parsed.markdown.is_none());
+
+        let resolved = parsed.resolve(Path::new("."));
+        assert!(resolved.markdown.syntax_highlighting);
+        assert!(resolved.markdown.highlight_theme.is_none());
+        assert!(!resolved.markdown.heading_ids);
+        assert!(!resolved.markdown.heading_anchors);
+        assert!(!resolved.markdown.footnotes);
+    }
+
+    #[test]
+    fn test_markdown_config_partial_section() {
+        let parsed: Config =
+            toml::from_str("[markdown]\nfootnotes = true\nsyntax_highlighting = false\n").unwrap();
+        let markdown = parsed.markdown.unwrap();
+        assert!(markdown.footnotes);
+        assert!(!markdown.syntax_highlighting);
+        assert!(!markdown.heading_ids);
     }
 }

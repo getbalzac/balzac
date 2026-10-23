@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::config::{Config, ResolvedConfig};
 use crate::context::build_collections_context;
 use crate::listing::render_listing_pages;
+use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageType, SitePages};
 use crate::{
@@ -192,6 +193,7 @@ impl DevSession {
         self.listing_outputs.clear();
         self.render_site()?;
         write_robots(&self.resolved_config)?;
+        markdown::write_highlight_css(&self.resolved_config)?;
         add_assets(&self.resolved_config)?;
         Ok(())
     }

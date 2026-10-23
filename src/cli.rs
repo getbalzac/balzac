@@ -5,6 +5,7 @@ use crate::config::{Config, CreateConfigError, InitFeature};
 use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
 use crate::listing::render_listing_pages;
+use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::{
     add_assets, discover_site_pages, make_dist_folder, render_collection_items, render_pages,
@@ -154,6 +155,14 @@ pub fn build(path: &Path) {
     if let Err(e) = write_robots(&resolved_config) {
         log::error!("Error writing robots.txt: {e}");
         std::process::exit(1);
+    }
+
+    match markdown::write_highlight_css(&resolved_config) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error writing highlight theme: {e}");
+            std::process::exit(1);
+        }
     }
 
     let start = std::time::Instant::now();

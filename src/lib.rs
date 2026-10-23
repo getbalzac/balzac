@@ -5,6 +5,7 @@ pub mod context;
 pub mod dev;
 pub mod hooks;
 pub mod listing;
+pub mod markdown;
 pub mod renderer;
 pub mod robots;
 pub mod sitemap;
@@ -501,8 +502,8 @@ pub fn render_collection_page(
         .as_ref()
         .expect("Collection item should have frontmatter");
 
-    let html_content = render
-        .render_markdown(raw_content)
+    let document = render
+        .render_document(raw_content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     let rendered_result = render.render(
@@ -510,8 +511,11 @@ pub fn render_collection_page(
         merge_contexts(
             parsed_config,
             &serde_json::json!({
-                "content": html_content,
+                "content": document.html,
                 "fm": frontmatter,
+                "toc": document.toc,
+                "toc_html": document.toc_html,
+                "excerpt": document.excerpt,
                 "collections": collections,
             }),
         ),

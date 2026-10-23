@@ -75,6 +75,7 @@ fn test_partials_registration() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -116,6 +117,7 @@ fn test_partials_registration_without_folder() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -163,6 +165,7 @@ fn test_full_workflow_single_page() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -226,6 +229,7 @@ fn test_full_workflow_multiple_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -299,6 +303,7 @@ fn test_workflow_with_global_data() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: Some(global),
         hooks: None,
         bundler: None,
@@ -351,6 +356,7 @@ fn test_make_dist_folder_creates_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -393,6 +399,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -437,6 +444,7 @@ fn test_workflow_preserves_file_extensions() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -492,6 +500,7 @@ fn test_template_with_conditionals() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: Some(global),
         hooks: None,
         bundler: None,
@@ -544,6 +553,7 @@ fn test_sitemap_generation_with_static_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -644,6 +654,7 @@ fn test_sitemap_generation_with_collections() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -748,6 +759,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -805,6 +817,7 @@ fn test_no_sitemap_without_base_url() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -886,6 +899,7 @@ fn test_custom_tag_renderer_for_links() {
         assets_directory: temp_path.join("assets").to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: tags_dir.to_string_lossy().to_string(),
+        markdown: None,
         global: None,
         hooks: None,
         bundler: None,
@@ -987,6 +1001,7 @@ fn test_collections_available_in_static_and_details_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        markdown: None,
         global: Some(global),
         hooks: None,
         bundler: None,
@@ -1323,4 +1338,101 @@ fn test_taxonomy_pages_and_sitemap() {
 fn test_listing_config_rejects_zero_per_page() {
     let result = toml::from_str::<Config>("[listings.posts]\nper_page = 0\n");
     assert!(result.is_err(), "per_page = 0 should be rejected");
+}
+
+#[test]
+fn test_markdown_extras_in_collection_details() {
+    let (
+        _temp,
+        temp_path,
+        pages_dir,
+        output_dir,
+        _layouts_dir,
+        _partials_dir,
+        _assets_dir,
+        content_dir,
+    ) = setup_test_project();
+
+    let blog_pages_dir = pages_dir.join("blog");
+    let blog_content_dir = content_dir.join("blog");
+    fs::create_dir(&blog_pages_dir).expect("Failed to create blog pages dir");
+    fs::create_dir_all(&blog_content_dir).expect("Failed to create blog content dir");
+
+    fs::write(
+        blog_pages_dir.join("details.hbs"),
+        "<aside>{{{excerpt}}}</aside>\
+         <nav>{{#each toc}}[{{level}}:{{id}}:{{text}}]{{/each}}</nav>\
+         <div class=\"toc\">{{{toc_html}}}</div>\
+         <main>{{{content}}}</main>",
+    )
+    .expect("Failed to write details template");
+
+    fs::write(
+        blog_content_dir.join("post.md"),
+        "---\ntitle: Post\n---\n\nTeaser[^n].\n\n<!-- more -->\n\n## Setup\n\n```rust\nlet x = 1;\n```\n\n[^n]: A note.",
+    )
+    .expect("Failed to write post");
+
+    let config_toml = format!(
+        "output_directory = {:?}\npages_directory = {:?}\ncontent_directory = {:?}\n\n\
+         [markdown]\nheading_ids = true\nfootnotes = true\nhighlight_theme = \"InspiredGitHub\"\n",
+        output_dir.to_string_lossy(),
+        pages_dir.to_string_lossy(),
+        content_dir.to_string_lossy(),
+    );
+    let config: Config = toml::from_str(&config_toml).expect("Failed to parse config");
+
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let collection_pages =
+        discover_collections(&resolved_config).expect("Failed to discover collections");
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer.init(&resolved_config);
+    render_collection_items(&resolved_config, &collection_pages, &renderer)
+        .expect("Failed to render collections");
+    balzac::markdown::write_highlight_css(&resolved_config).expect("Failed to write theme css");
+
+    let output = fs::read_to_string(output_dir.join("blog").join("post.html"))
+        .expect("Failed to read output");
+
+    assert!(
+        output.contains(r##"<aside><p>Teaser<sup class="footnote-ref"><a href="#fn-n""##),
+        "excerpt should contain the content before the marker, got: {output}"
+    );
+    assert!(
+        output.contains("<nav>[2:setup:Setup]</nav>"),
+        "got: {output}"
+    );
+    assert!(
+        output.contains(r##"<li><a href="#setup">Setup</a></li>"##),
+        "got: {output}"
+    );
+    assert!(
+        output.contains(r#"<h2 id="setup">Setup</h2>"#),
+        "got: {output}"
+    );
+    assert!(
+        output.contains(r#"<pre class="hl-code"><code class="language-rust">"#),
+        "got: {output}"
+    );
+    assert!(
+        output.contains(r#"<section class="footnotes""#),
+        "got: {output}"
+    );
+
+    let css = fs::read_to_string(output_dir.join("highlight.css")).expect("Failed to read css");
+    assert!(css.contains(".hl-code {"), "got: {css}");
+}
+
+#[test]
+fn test_unknown_highlight_theme_is_an_error() {
+    let (_temp, temp_path, ..) = setup_test_project();
+    let config: Config =
+        toml::from_str("[markdown]\nhighlight_theme = \"nope\"\n").expect("Failed to parse");
+    let resolved_config = config.resolve(&temp_path);
+
+    let error = balzac::markdown::write_highlight_css(&resolved_config)
+        .expect_err("Unknown theme should fail");
+    assert!(error.to_string().contains("InspiredGitHub"), "got: {error}");
 }
