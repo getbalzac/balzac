@@ -369,6 +369,32 @@ Handlebars files in the tags directory (`./tags` by default) replace the HTML of
 </figure>
 ```
 
+## Static Page Frontmatter
+
+Static pages (`pages/*.hbs`, `*.handlebars`, `*.html`) can also start with an optional YAML frontmatter block. It is stripped from the output and exposed to the template under `fm`, alongside your `global` data and `collections`:
+
+```hbs
+---
+title: "About us"
+---
+<h1>{{fm.title}}</h1>
+```
+
+Invalid YAML in a page's frontmatter fails the build with the page path in the error.
+
+## Sitemap Frontmatter
+
+Both static pages and collection items can set sitemap metadata in their frontmatter:
+
+- `lastmod`: string, e.g. `"2024-01-20"`
+- `priority`: number, e.g. `0.8` (falls back to `[sitemap].default_priority`)
+- `changefreq`: string, e.g. `weekly` (falls back to `[sitemap].default_changefreq`)
+- `sitemap_exclude`: `true` to leave the page out of the sitemap (it is still rendered)
+
+The `404` page is always left out of the sitemap, even if its frontmatter sets these keys.
+
+Sitemap metadata is read when pages are discovered, before the `render_before` hook runs. A `render_before` hook that rewrites a static page's frontmatter changes the rendered page but not its sitemap entry. Collection items use the frontmatter saved at discovery for both rendering and the sitemap. To change frontmatter from a hook, use `build_before`, which runs before discovery.
+
 ## Development
 
 All required tooling can be installed using [mise](https://mise.jdx.dev/) with `mise install`
