@@ -6,11 +6,14 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 // Import from the main crate
-use balzac::config::{Config, RobotsConfig, SitemapConfig, UrlStyle};
+use balzac::config::{
+    CombinedFeedConfig, CombinedFeedSetting, Config, FeedConfig, FeedFormat, FeedOverride,
+    RobotsConfig, SitemapConfig, UrlStyle,
+};
 use balzac::listing::render_listing_pages;
 use balzac::{
     add_assets, discover_collections, discover_site_pages, discover_static_pages, make_dist_folder,
-    render_collection_items, render_pages, write_robots, write_sitemap,
+    render_collection_items, render_pages, write_feeds, write_robots, write_sitemap,
 };
 
 /// Helper function to create a temporary project structure
@@ -85,6 +88,7 @@ fn test_partials_registration() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -128,6 +132,7 @@ fn test_partials_registration_without_folder() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -177,6 +182,7 @@ fn test_full_workflow_single_page() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -242,6 +248,7 @@ fn test_full_workflow_multiple_pages() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -317,6 +324,7 @@ fn test_workflow_with_global_data() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -371,6 +379,7 @@ fn test_make_dist_folder_creates_directory() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -415,6 +424,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -461,6 +471,7 @@ fn test_workflow_preserves_file_extensions() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -518,6 +529,7 @@ fn test_template_with_conditionals() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -577,6 +589,7 @@ fn test_sitemap_generation_with_static_pages() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -679,6 +692,7 @@ fn test_sitemap_generation_with_collections() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -780,6 +794,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -839,6 +854,7 @@ fn test_no_sitemap_without_base_url() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -922,6 +938,7 @@ fn test_custom_tag_renderer_for_links() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -1025,6 +1042,7 @@ fn test_collections_available_in_static_and_details_pages() {
         url_style: UrlStyle::default(),
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
+        feed: None,
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -2058,4 +2076,283 @@ fn test_not_found_page_with_frontmatter_stays_out_of_sitemap() {
     assert!(!sitemap.contains("404"), "{sitemap}");
     let not_found = fs::read_to_string(output_dir.join("404.html")).expect("Failed to read 404");
     assert_eq!(not_found, "<h1>Not found</h1>");
+}
+
+/// Builds a project with `blog` and `notes` collections and runs feed generation
+fn build_feeds(base_url: Option<&str>, feed: FeedConfig) -> (TempDir, PathBuf) {
+    let (temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    for collection in ["blog", "notes"] {
+        fs::create_dir_all(pages_dir.join(collection)).expect("Failed to create pages dir");
+        fs::create_dir_all(content_dir.join(collection)).expect("Failed to create content dir");
+        fs::write(
+            pages_dir.join(collection).join("details.hbs"),
+            "{{{content}}}",
+        )
+        .expect("Failed to write details template");
+    }
+
+    fs::write(
+        content_dir.join("blog").join("first.md"),
+        "---\ntitle: First & Foremost\ndate: 2024-01-15\nsummary: The <first> post\nauthor: Ada\n---\n\nHello **world**",
+    )
+    .expect("Failed to write post");
+    fs::write(
+        content_dir.join("blog").join("second.md"),
+        "---\ntitle: Second\ndate: 2024-03-01T09:30:00+01:00\n---\n\nSecond body",
+    )
+    .expect("Failed to write post");
+    fs::write(
+        content_dir.join("blog").join("undated.md"),
+        "---\ntitle: Undated\n---\n\nNo date",
+    )
+    .expect("Failed to write post");
+    fs::write(
+        content_dir.join("notes").join("note.md"),
+        "---\ntitle: A note\ndate: 2024-02-01\n---\n\nNote body with [a link](/about)",
+    )
+    .expect("Failed to write note");
+
+    // Custom markdown tag templates must apply to feed content too
+    let tags_dir = temp_path.join("tags");
+    fs::create_dir_all(&tags_dir).expect("Failed to create tags dir");
+    fs::write(
+        tags_dir.join("a.hbs"),
+        r#"<a href="{{props.href}}" class="custom-link">{{{content}}}</a>"#,
+    )
+    .expect("Failed to write tag template");
+
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        content_directory: content_dir.to_string_lossy().to_string(),
+        base_url: base_url.map(str::to_string),
+        feed: Some(feed),
+        ..Default::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let mut site_pages = SitePages::new();
+    site_pages
+        .add_pages(discover_collections(&resolved_config).expect("Failed to discover collections"));
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer.init(&resolved_config);
+    write_feeds(&resolved_config, &site_pages, &renderer).expect("Failed to write feeds");
+
+    (temp, output_dir)
+}
+
+#[test]
+fn test_feed_generation_atom_by_default() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com/"),
+        FeedConfig {
+            title: Some("My Site".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let atom = fs::read_to_string(output_dir.join("blog").join("atom.xml"))
+        .expect("Atom feed should exist");
+    assert!(!output_dir.join("blog").join("feed.xml").exists());
+    assert!(output_dir.join("notes").join("atom.xml").exists());
+
+    assert!(atom.contains("<title>My Site</title>"));
+    assert!(atom.contains("<id>https://example.com/blog/atom.xml</id>"));
+    assert!(atom.contains("<updated>2024-03-01T08:30:00Z</updated>"));
+    assert!(atom.contains("<title>First &amp; Foremost</title>"));
+    assert!(atom.contains(r#"href="https://example.com/blog/first""#));
+    assert!(atom.contains("<published>2024-01-15T00:00:00Z</published>"));
+    assert!(atom.contains(r#"<summary type="text">The &lt;first&gt; post</summary>"#));
+    assert!(!atom.contains("<content"), "full_content is off by default");
+    assert!(
+        !atom.contains("Undated"),
+        "entries without a date are skipped"
+    );
+    assert!(!atom.contains("A note"), "feeds are per collection");
+
+    let second = atom.find("/blog/second").expect("second post present");
+    let first = atom.find("/blog/first").expect("first post present");
+    assert!(second < first, "entries are sorted newest first");
+}
+
+#[test]
+fn test_feed_generation_rss_with_overrides_and_full_content() {
+    let mut overrides = std::collections::BTreeMap::new();
+    overrides.insert(
+        "blog".to_string(),
+        FeedOverride {
+            title: Some("The Blog".to_string()),
+            description: Some("Posts".to_string()),
+        },
+    );
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            format: FeedFormat::Both,
+            collections: Some(vec!["blog".to_string()]),
+            limit: 1,
+            full_content: true,
+            title: Some("My Site".to_string()),
+            overrides,
+            ..Default::default()
+        },
+    );
+
+    assert!(output_dir.join("blog").join("atom.xml").exists());
+    assert!(
+        !output_dir.join("notes").exists(),
+        "only listed collections get feeds"
+    );
+
+    let rss = fs::read_to_string(output_dir.join("blog").join("feed.xml"))
+        .expect("RSS feed should exist");
+    assert!(rss.contains("<title>The Blog</title>"));
+    assert!(rss.contains("<description>Posts</description>"));
+    assert!(rss.contains(r#"<atom:link href="https://example.com/blog/feed.xml""#));
+    assert!(rss.contains("<pubDate>Fri, 01 Mar 2024 08:30:00 GMT</pubDate>"));
+    assert!(rss.contains("<content:encoded>&lt;p&gt;Second body&lt;/p&gt;"));
+    assert!(
+        !rss.contains("/blog/first"),
+        "limit keeps only the newest item"
+    );
+}
+
+#[test]
+fn test_no_feed_without_base_url() {
+    let (_temp, output_dir) = build_feeds(None, FeedConfig::default());
+    assert!(!output_dir.join("blog").join("atom.xml").exists());
+}
+
+#[test]
+fn test_no_feed_when_disabled() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    assert!(!output_dir.join("blog").join("atom.xml").exists());
+}
+
+#[test]
+fn test_combined_feed_merges_collections() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            format: FeedFormat::Both,
+            combined: Some(CombinedFeedSetting::Enabled(true)),
+            limit: 2,
+            title: Some("My Site".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(output_dir.join("blog").join("atom.xml").exists());
+    assert!(output_dir.join("notes").join("atom.xml").exists());
+
+    let atom =
+        fs::read_to_string(output_dir.join("atom.xml")).expect("Combined Atom feed should exist");
+    assert!(atom.contains("<id>https://example.com/atom.xml</id>"));
+    assert!(atom.contains("<title>My Site</title>"));
+    let second = atom.find("/blog/second").expect("newest blog post present");
+    let note = atom.find("/notes/note").expect("note present");
+    assert!(
+        second < note,
+        "entries from all collections sorted newest first"
+    );
+    assert!(
+        !atom.contains("/blog/first"),
+        "limit applies to the combined feed"
+    );
+
+    let rss =
+        fs::read_to_string(output_dir.join("feed.xml")).expect("Combined RSS feed should exist");
+    assert!(rss.contains(r#"<atom:link href="https://example.com/feed.xml""#));
+}
+
+#[test]
+fn test_no_combined_feed_by_default() {
+    let (_temp, output_dir) = build_feeds(Some("https://example.com"), FeedConfig::default());
+    assert!(output_dir.join("blog").join("atom.xml").exists());
+    assert!(!output_dir.join("atom.xml").exists());
+}
+
+#[test]
+fn test_combined_feed_with_own_collections_and_settings() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            // No per-collection feeds, only the combined one
+            collections: Some(Vec::new()),
+            limit: 1,
+            title: Some("My Site".to_string()),
+            combined: Some(CombinedFeedSetting::Detailed(CombinedFeedConfig {
+                collections: Some(vec!["notes".to_string()]),
+                title: Some("Notes only".to_string()),
+                description: None,
+                limit: Some(0),
+            })),
+            ..Default::default()
+        },
+    );
+
+    assert!(!output_dir.join("blog").exists());
+    assert!(!output_dir.join("notes").exists());
+
+    let atom =
+        fs::read_to_string(output_dir.join("atom.xml")).expect("Combined Atom feed should exist");
+    assert!(atom.contains("<title>Notes only</title>"));
+    assert!(atom.contains("/notes/note"));
+    assert!(
+        !atom.contains("/blog/"),
+        "only listed collections are combined"
+    );
+}
+
+#[test]
+fn test_combined_feed_from_collection_list() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            collections: Some(vec!["blog".to_string()]),
+            combined: Some(CombinedFeedSetting::Collections(vec![
+                "blog".to_string(),
+                "notes".to_string(),
+            ])),
+            ..Default::default()
+        },
+    );
+
+    assert!(output_dir.join("blog").join("atom.xml").exists());
+    assert!(!output_dir.join("notes").exists());
+
+    let atom =
+        fs::read_to_string(output_dir.join("atom.xml")).expect("Combined Atom feed should exist");
+    assert!(atom.contains("/blog/first"));
+    assert!(atom.contains("/notes/note"));
+    assert!(atom.contains("<title>https://example.com</title>"));
+}
+
+#[test]
+fn test_feed_full_content_uses_custom_tag_templates() {
+    let (_temp, output_dir) = build_feeds(
+        Some("https://example.com"),
+        FeedConfig {
+            collections: Some(vec!["notes".to_string()]),
+            full_content: true,
+            ..Default::default()
+        },
+    );
+
+    let atom = fs::read_to_string(output_dir.join("notes").join("atom.xml"))
+        .expect("Atom feed should exist");
+    assert!(
+        atom.contains(
+            "&lt;a href=&quot;/about&quot; class=&quot;custom-link&quot;&gt;a link&lt;/a&gt;"
+        ),
+        "feed content should be rendered through custom tag templates: {atom}"
+    );
 }

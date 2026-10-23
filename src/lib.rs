@@ -3,6 +3,7 @@ pub mod collection;
 pub mod config;
 pub mod context;
 pub mod dev;
+pub mod feed;
 pub mod hooks;
 pub mod listing;
 pub mod markdown;
@@ -394,6 +395,171 @@ pub fn write_robots(parsed_config: &config::ResolvedConfig) -> std::io::Result<(
     let content = robots::generate_robots(&robots_config, sitemap_url(parsed_config).as_deref());
     log::info!("Writing robots.txt to {}", robots_path.display());
     fs::write(&robots_path, content)
+}
+
+/// Writes the configured feeds and returns the paths of the files written
+pub fn write_feeds(
+    parsed_config: &config::ResolvedConfig,
+    site_pages: &SitePages,
+    render: &HandlebarsRenderer,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    let Some(feed_config) = &parsed_config.feed else {
+        return Ok(written);
+    };
+
+    if !feed_config.enabled {
+        log::debug!("Feed generation is disabled");
+        return Ok(written);
+    }
+
+    let Some(base_url) = &parsed_config.base_url else {
+        log::warn!("Feeds are configured but no base_url is set, skipping feed generation");
+        return Ok(written);
+    };
+    let site_url = base_url.trim_end_matches('/');
+
+    let collections = feed::feed_collections(site_pages, feed_config);
+    let combined = feed_config
+        .combined
+        .as_ref()
+        .and_then(config::CombinedFeedSetting::resolve);
+    let combined_collections = combined.as_ref().map(|c| match &c.collections {
+        Some(names) => names.clone(),
+        None => collections.clone(),
+    });
+
+    // Select once across every collection that appears in any feed
+    let mut selected = collections.clone();
+    selected.extend(combined_collections.iter().flatten().cloned());
+    selected.sort();
+    selected.dedup();
+    let entries = feed::select_feed_entries(site_pages, &selected);
+
+    let limit = effective_feed_limit(feed_config.limit);
+    for collection in &collections {
+        let collection_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.in_collection(collection))
+            .take(limit)
+            .collect();
+        if collection_entries.is_empty() {
+            log::warn!("Collection {collection} has no dated entries, skipping its feed");
+            continue;
+        }
+
+        let overrides = feed_config.overrides.get(collection);
+        let title = overrides
+            .and_then(|o| o.title.as_deref())
+            .or(feed_config.title.as_deref())
+            .unwrap_or(collection);
+        let description = overrides
+            .and_then(|o| o.description.as_deref())
+            .or(feed_config.description.as_deref());
+
+        written.extend(write_feed_files(
+            parsed_config,
+            render,
+            &collection_entries,
+            Some(collection),
+            title,
+            description,
+        )?);
+    }
+
+    if let (Some(combined), Some(combined_collections)) = (combined, combined_collections) {
+        let limit = effective_feed_limit(combined.limit.unwrap_or(feed_config.limit));
+        let combined_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| combined_collections.iter().any(|c| e.in_collection(c)))
+            .take(limit)
+            .collect();
+        if combined_entries.is_empty() {
+            log::warn!("Combined feed has no dated entries, skipping it");
+        } else {
+            written.extend(write_feed_files(
+                parsed_config,
+                render,
+                &combined_entries,
+                None,
+                combined
+                    .title
+                    .as_deref()
+                    .or(feed_config.title.as_deref())
+                    .unwrap_or(site_url),
+                combined
+                    .description
+                    .as_deref()
+                    .or(feed_config.description.as_deref()),
+            )?);
+        }
+    }
+
+    Ok(written)
+}
+
+/// A configured item limit, where 0 means unlimited
+fn effective_feed_limit(limit: usize) -> usize {
+    if limit == 0 { usize::MAX } else { limit }
+}
+
+/// Writes every configured feed kind for `entries`, inside the collection's
+/// output directory or at the output root when `collection` is `None`
+fn write_feed_files(
+    parsed_config: &config::ResolvedConfig,
+    render: &HandlebarsRenderer,
+    entries: &[&feed::FeedEntry],
+    collection: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    let (Some(feed_config), Some(base_url)) = (&parsed_config.feed, &parsed_config.base_url) else {
+        return Ok(written);
+    };
+    let site_url = base_url.trim_end_matches('/');
+
+    let items = entries
+        .iter()
+        .map(|&entry| {
+            let content_html = if feed_config.full_content {
+                let body = entry.page.content.as_deref().unwrap_or_default();
+                Some(render.render_markdown(body)?)
+            } else {
+                None
+            };
+            Ok(feed::FeedItem {
+                entry: entry.clone(),
+                content_html,
+            })
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+
+    let (output_dir, url_dir) = match collection {
+        Some(collection) => (
+            parsed_config.output_directory.join(collection),
+            format!("{site_url}/{collection}"),
+        ),
+        None => (parsed_config.output_directory.clone(), site_url.to_string()),
+    };
+    fs::create_dir_all(&output_dir)?;
+
+    for kind in feed::FeedKind::for_format(feed_config.format) {
+        let feed_url = format!("{url_dir}/{}", kind.filename());
+        let channel = feed::FeedChannel {
+            title,
+            description,
+            author: feed_config.author.as_deref(),
+            site_url,
+            feed_url: &feed_url,
+        };
+        let path = output_dir.join(kind.filename());
+        log::info!("Writing feed to {}", path.display());
+        fs::write(&path, kind.generate(&channel, &items))?;
+        written.push(path);
+    }
+
+    Ok(written)
 }
 
 #[must_use]

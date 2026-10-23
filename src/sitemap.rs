@@ -157,12 +157,22 @@ pub fn generate_sitemap(site_pages: &SitePages, base_url: &str, config: &Sitemap
     xml
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+/// Escapes XML special characters and drops characters that XML 1.0 forbids
+pub(crate) fn escape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            c if c < ' ' || c == '\u{FFFE}' || c == '\u{FFFF}' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -275,5 +285,6 @@ mod tests {
     fn test_escape_xml() {
         assert_eq!(escape_xml("Hello & World"), "Hello &amp; World");
         assert_eq!(escape_xml("<test>"), "&lt;test&gt;");
+        assert_eq!(escape_xml("a\u{0}b\u{1B}c\td"), "abc\td");
     }
 }

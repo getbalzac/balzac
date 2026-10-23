@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::num::NonZeroUsize;
@@ -92,6 +92,69 @@ impl Default for MarkdownConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeedFormat {
+    #[default]
+    Atom,
+    Rss,
+    Both,
+}
+
+/// Per-collection overrides for feed metadata
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct FeedOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FeedConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub format: FeedFormat,
+    /// Collections to generate feeds for; `None` means every collection
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Vec<String>>,
+    /// Maximum number of items per feed; 0 means unlimited
+    #[serde(default = "default_feed_limit")]
+    pub limit: usize,
+    /// Include the rendered markdown body in each item
+    #[serde(default)]
+    pub full_content: bool,
+    /// Site-wide feed at the output root merging several collections
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combined: Option<CombinedFeedSetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, FeedOverride>,
+}
+
+impl Default for FeedConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            format: FeedFormat::default(),
+            collections: None,
+            limit: default_feed_limit(),
+            full_content: false,
+            combined: None,
+            title: None,
+            description: None,
+            author: None,
+            overrides: BTreeMap::new(),
+        }
+    }
+}
+
 fn default_robots_enabled() -> bool {
     true
 }
@@ -116,6 +179,51 @@ fn is_default_url_style(style: &UrlStyle) -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+/// `combined = true`, `combined = ["blog", "notes"]` or a `[feed.combined]` table
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CombinedFeedSetting {
+    Enabled(bool),
+    Collections(Vec<String>),
+    Detailed(CombinedFeedConfig),
+}
+
+impl CombinedFeedSetting {
+    /// The combined feed settings, or `None` when it is turned off
+    #[must_use]
+    pub fn resolve(&self) -> Option<CombinedFeedConfig> {
+        match self {
+            CombinedFeedSetting::Enabled(false) => None,
+            CombinedFeedSetting::Enabled(true) => Some(CombinedFeedConfig::default()),
+            CombinedFeedSetting::Collections(collections) => Some(CombinedFeedConfig {
+                collections: Some(collections.clone()),
+                ..Default::default()
+            }),
+            CombinedFeedSetting::Detailed(config) => Some(config.clone()),
+        }
+    }
+}
+
+/// Unset fields fall back to the `[feed]` values; `collections` defaults to
+/// the collections that get their own feed
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CombinedFeedConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Maximum number of items; 0 means unlimited
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+fn default_feed_limit() -> usize {
+    20
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -233,6 +341,7 @@ pub struct Config {
     pub listings: HashMap<String, ListingConfig>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub taxonomies: HashMap<String, TaxonomyConfig>,
+    pub feed: Option<FeedConfig>,
 }
 
 impl Default for Config {
@@ -255,6 +364,7 @@ impl Default for Config {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         }
     }
 }
@@ -281,6 +391,7 @@ impl Config {
             url_style: self.url_style,
             listings: self.listings.clone(),
             taxonomies: self.taxonomies.clone(),
+            feed: self.feed.clone(),
             dev_mode: false,
         }
     }
@@ -311,6 +422,7 @@ pub struct ResolvedConfig {
     pub url_style: UrlStyle,
     pub listings: HashMap<String, ListingConfig>,
     pub taxonomies: HashMap<String, TaxonomyConfig>,
+    pub feed: Option<FeedConfig>,
     pub dev_mode: bool,
 }
 
@@ -361,6 +473,7 @@ fn is_default_vite_dev_origin(s: &String) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitFeature {
     Sitemap,
+    Feed,
 }
 
 #[derive(Debug)]
@@ -419,6 +532,11 @@ impl Config {
             config.sitemap = Some(SitemapConfig::default());
         }
 
+        if features.contains(&InitFeature::Feed) {
+            config.base_url = Some("https://example.com".to_string());
+            config.feed = Some(FeedConfig::default());
+        }
+
         let config_content = toml::to_string_pretty(&config)?;
         fs::write(&config_path, config_content)?;
 
@@ -474,6 +592,7 @@ mod tests {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -498,6 +617,7 @@ mod tests {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -526,6 +646,7 @@ mod tests {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         };
 
         assert!(config.global.is_some());
@@ -560,6 +681,7 @@ mod tests {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         };
 
         assert_eq!(config.output_directory, "./build");
@@ -593,6 +715,7 @@ mod tests {
             url_style: UrlStyle::default(),
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
+            feed: None,
         };
 
         assert_eq!(config.base_url, Some("https://example.com".to_string()));
@@ -639,6 +762,108 @@ mod tests {
         assert!(sitemap.enabled);
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_config_create_with_feed_feature() {
+        let temp_dir = std::env::temp_dir().join("balzac_test_create_feed");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        Config::create(&temp_dir, Some(&[InitFeature::Feed])).unwrap();
+
+        let config_content = fs::read_to_string(temp_dir.join("balzac.toml")).unwrap();
+        let parsed: Config = toml::from_str(&config_content).unwrap();
+
+        assert_eq!(parsed.base_url, Some("https://example.com".to_string()));
+        assert!(parsed.sitemap.is_none());
+        let feed = parsed.feed.unwrap();
+        assert!(feed.enabled);
+        assert_eq!(feed.format, FeedFormat::Atom);
+        assert_eq!(feed.limit, 20);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_feed_config_parsing() {
+        let parsed: Config = toml::from_str(
+            r#"
+            base_url = "https://example.com"
+
+            [feed]
+            format = "both"
+            collections = ["blog"]
+            limit = 5
+            full_content = true
+            combined = true
+            title = "My Site"
+
+            [feed.overrides.blog]
+            title = "My Blog"
+            "#,
+        )
+        .unwrap();
+
+        let feed = parsed.feed.unwrap();
+        assert!(feed.enabled);
+        assert_eq!(feed.format, FeedFormat::Both);
+        assert_eq!(feed.collections, Some(vec!["blog".to_string()]));
+        assert_eq!(feed.limit, 5);
+        assert!(feed.full_content);
+        assert_eq!(
+            feed.combined.and_then(|c| c.resolve()),
+            Some(CombinedFeedConfig::default())
+        );
+        assert_eq!(feed.title.as_deref(), Some("My Site"));
+        assert_eq!(feed.overrides["blog"].title.as_deref(), Some("My Blog"));
+        assert!(feed.overrides["blog"].description.is_none());
+    }
+
+    #[test]
+    fn test_combined_feed_setting_forms() {
+        let combined = |toml_str: &str| {
+            toml::from_str::<Config>(toml_str)
+                .unwrap()
+                .feed
+                .unwrap()
+                .combined
+                .and_then(|c| c.resolve())
+        };
+
+        assert_eq!(combined("[feed]\n"), None);
+        assert_eq!(combined("[feed]\ncombined = false\n"), None);
+        assert_eq!(
+            combined("[feed]\ncombined = [\"blog\", \"notes\"]\n"),
+            Some(CombinedFeedConfig {
+                collections: Some(vec!["blog".to_string(), "notes".to_string()]),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            combined(
+                "[feed]\n[feed.combined]\ncollections = [\"blog\"]\ntitle = \"All\"\ndescription = \"Everything\"\nlimit = 50\n"
+            ),
+            Some(CombinedFeedConfig {
+                collections: Some(vec!["blog".to_string()]),
+                title: Some("All".to_string()),
+                description: Some("Everything".to_string()),
+                limit: Some(50),
+            })
+        );
+    }
+
+    #[test]
+    fn test_combined_feed_rejects_unknown_keys() {
+        let parsed: Result<Config, _> =
+            toml::from_str("[feed]\n[feed.combined]\ncolections = [\"blog\"]\n");
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn test_feed_config_rejects_unknown_format() {
+        let parsed: Result<Config, _> = toml::from_str("[feed]\nformat = \"json\"\n");
+        assert!(parsed.is_err());
     }
 
     #[test]
