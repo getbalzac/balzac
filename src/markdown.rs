@@ -243,7 +243,7 @@ pub fn write_highlight_css(configuration: &config::ResolvedConfig) -> io::Result
     let css = highlight_theme_css(theme_name)?;
     let css_path = configuration.output_directory.join(HIGHLIGHT_CSS_FILENAME);
     log::info!("Writing highlight theme to {}", css_path.display());
-    std::fs::write(css_path, css)
+    crate::write_if_changed(&css_path, css)
 }
 
 fn escape_html(s: &str) -> String {

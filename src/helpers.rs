@@ -203,6 +203,38 @@ impl HelperDef for DateHelper {
     }
 }
 
+/// `(format, formatted time)` of the `{{date "now"}}` calls made while
+/// rendering something: the parts of its output that depend on the clock.
+pub type ClockReadings = std::collections::BTreeSet<(String, String)>;
+
+thread_local! {
+    static CLOCK_READINGS: std::cell::RefCell<Option<ClockReadings>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f`, also returning the `{{date "now"}}` calls made during it on this
+/// thread. The build cache re-renders output whose readings changed.
+pub fn track_clock<T>(f: impl FnOnce() -> T) -> (T, ClockReadings) {
+    let outer = CLOCK_READINGS.replace(Some(ClockReadings::new()));
+    let result = f();
+    let readings = CLOCK_READINGS.replace(outer).unwrap_or_default();
+    // nested tracking: the outer call depends on the clock too
+    CLOCK_READINGS.with_borrow_mut(|outer| {
+        if let Some(outer) = outer {
+            outer.extend(readings.iter().cloned());
+        }
+    });
+    (result, readings)
+}
+
+/// Whether `{{date "now"}}` would still render every reading the same.
+#[must_use]
+pub fn clock_unchanged(readings: &ClockReadings) -> bool {
+    readings.iter().all(|(format, formatted)| {
+        format_date(&Json::String("now".to_string()), format).as_ref() == Ok(formatted)
+    })
+}
+
 /// Formats `value`: an ISO 8601 date or date-time (`2025-01-31`,
 /// `2025-01-31T10:00:00+01:00`, ...), a Unix timestamp in seconds, or `"now"`.
 fn format_date(value: &Json, format: &str) -> Result<String, String> {
@@ -210,7 +242,17 @@ fn format_date(value: &Json, format: &str) -> Result<String, String> {
 
     let time = match value {
         Json::String(text) if text == "now" => {
-            BrokenDownTime::from(&jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC))
+            let now =
+                BrokenDownTime::from(&jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC));
+            let formatted = now
+                .to_string(format)
+                .map_err(|e| format!("cannot format {value} with {format:?}: {e}"))?;
+            CLOCK_READINGS.with_borrow_mut(|readings| {
+                if let Some(readings) = readings {
+                    readings.insert((format.to_string(), formatted.clone()));
+                }
+            });
+            return Ok(formatted);
         }
         Json::String(text) => {
             let pieces = jiff::fmt::temporal::Pieces::parse(text.trim())

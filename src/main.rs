@@ -16,6 +16,12 @@ fn main() {
                     clap::arg!(--root <PATH>)
                         .value_parser(clap::value_parser!(PathBuf))
                         .required(false),
+                )
+                .arg(
+                    clap::arg!(--force)
+                        .visible_alias("no-cache")
+                        .help("Ignore the build cache and rebuild every page")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -73,7 +79,10 @@ fn main() {
         }
         Some(("build", sub_matches)) => {
             let path = get_path_arg(sub_matches, "root");
-            cli::build(&path);
+            let options = cli::BuildOptions {
+                force: sub_matches.get_flag("force"),
+            };
+            cli::build(&path, options);
         }
         Some(("dev", sub_matches)) => {
             let path = get_path_arg(sub_matches, "root");

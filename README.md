@@ -84,6 +84,12 @@ Build a site from a specific root:
 balzac build --root ./my-site
 ```
 
+Rebuild everything, ignoring the [build cache](#incremental-builds):
+
+```sh
+balzac build --force   # or --no-cache
+```
+
 Run the dev server:
 
 ```sh
@@ -118,6 +124,21 @@ Current behavior:
 
 The dev server defaults to `http://127.0.0.1:4000`.
 
+
+### Incremental builds
+
+`balzac build` only re-renders the pages whose inputs changed since the last successful build, and leaves the other files in the output directory untouched. It keeps track of them in `.balzac/cache/`, which `balzac init` adds to your `.gitignore` (the folder also ignores itself).
+
+- changing `balzac.toml`, a partial, layout, tag template or helper, `pages/robots.txt`, the Vite manifest or the Balzac version rebuilds everything, recreating the output directory as a build without cache does
+- a static page is re-rendered when its file changes; a collection item when its collection's template changes, a listing or taxonomy page when its template changes
+- any template can list collection items through `collections`, so adding, editing or removing a collection item re-renders every page
+- pages that are no longer produced (deleted sources, changed `slug`s, a tag with no posts left, a feed without dated entries) are removed from the output directory, as are assets deleted from `assets/`; new and changed assets are copied, unchanged ones are not
+- a page whose output file was edited or deleted since the last build (e.g. by a hook) is rendered again, so before `render_after` and `build_after` run, the files Balzac writes are exactly those of a full build. Files Balzac did not write, such as those of hooks, are kept until the next full rebuild
+- a page using `{{date "now"}}` is rendered again once the formatted date changes, e.g. on January 1st for `{{date "now" "%Y"}}`
+- hooks run on every build
+- a build that fails, and `balzac dev`, which writes its own output, discard the cache, so the next build rebuilds everything
+
+Pass `--force` (or `--no-cache`) to rebuild everything anyway.
 
 ## Directory Structure
 
@@ -464,7 +485,7 @@ Hooks are executed in the following order during a build:
 
 1. **render_init_before**: Runs before the renderer is initialized
 2. **render_init_after**: Runs after the renderer is initialized
-3. **build_before**: Runs before the dist folder is created
+3. **build_before**: Runs before the dist folder is created (or, for an [incremental build](#incremental-builds), updated)
 4. **render_before**: Runs before rendering static pages and collections
 5. **render_after**: Runs after rendering is complete, before assets are copied
 6. **build_after**: Runs after all build steps are complete
