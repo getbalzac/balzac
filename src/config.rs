@@ -335,6 +335,43 @@ pub struct TaxonomyConfig {
     pub collections: Option<Vec<String>>,
 }
 
+/// Per-collection settings, configured under `[collections.<name>]`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionConfig {
+    /// Template used to render items, relative to `<pages_directory>/<name>/`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_collection_template"
+    )]
+    pub template: Option<String>,
+}
+
+/// Accepts only templates inside the collection's pages folder: one outside it
+/// (e.g. `../shared.hbs`) would also be rendered as a static page, and the dev
+/// server would not know to rebuild the collection when it changes.
+fn deserialize_collection_template<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let template = String::deserialize(deserializer)?;
+    let stays_inside = !template.is_empty()
+        && Path::new(&template)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+    if stays_inside {
+        Ok(Some(template))
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "template \"{template}\" must be a relative path inside the collection's \
+             pages folder (e.g. \"post.hbs\" or \"templates/post.hbs\")"
+        )))
+    }
+}
+
+pub const DEFAULT_COLLECTION_TEMPLATE: &str = "details.hbs";
+
 /// Every config struct denies unknown keys so that typos fail loudly; only
 /// `global` (and map keys such as collection names) is free-form. New config
 /// structs need `#[serde(deny_unknown_fields)]` too (serde does not support it
@@ -398,6 +435,8 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub taxonomies: HashMap<String, TaxonomyConfig>,
     pub feed: Option<FeedConfig>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub collections: HashMap<String, CollectionConfig>,
 }
 
 impl Default for Config {
@@ -421,6 +460,7 @@ impl Default for Config {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         }
     }
 }
@@ -458,6 +498,7 @@ impl Config {
             listings: self.listings.clone(),
             taxonomies: self.taxonomies.clone(),
             feed: self.feed.clone(),
+            collections: self.collections.clone(),
             dev_mode: false,
         }
     }
@@ -489,7 +530,21 @@ pub struct ResolvedConfig {
     pub listings: HashMap<String, ListingConfig>,
     pub taxonomies: HashMap<String, TaxonomyConfig>,
     pub feed: Option<FeedConfig>,
+    pub collections: HashMap<String, CollectionConfig>,
     pub dev_mode: bool,
+}
+
+impl ResolvedConfig {
+    /// Path of the template used to render items of `collection_name`.
+    #[must_use]
+    pub fn collection_template_path(&self, collection_name: &str) -> std::path::PathBuf {
+        let template = self
+            .collections
+            .get(collection_name)
+            .and_then(|collection| collection.template.as_deref())
+            .unwrap_or(DEFAULT_COLLECTION_TEMPLATE);
+        self.pages_directory.join(collection_name).join(template)
+    }
 }
 
 fn default_vite_manifest_path() -> String {
@@ -724,6 +779,7 @@ mod tests {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         };
         assert_eq!(config.output_directory, "./dist");
     }
@@ -749,6 +805,7 @@ mod tests {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         };
         assert_eq!(config.pages_directory, "./pages");
     }
@@ -778,6 +835,7 @@ mod tests {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         };
 
         assert!(config.global.is_some());
@@ -813,6 +871,7 @@ mod tests {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         };
 
         assert_eq!(config.output_directory, "./build");
@@ -847,6 +906,7 @@ mod tests {
             listings: HashMap::new(),
             taxonomies: HashMap::new(),
             feed: None,
+            collections: HashMap::new(),
         };
 
         assert_eq!(config.base_url, Some("https://example.com".to_string()));
@@ -1311,5 +1371,35 @@ mod tests {
             undocumented.is_empty(),
             "config keys missing from the README toml examples: {undocumented:?}"
         );
+    }
+
+    #[test]
+    fn test_collection_template_must_stay_inside_collection_folder() {
+        for template in ["post.hbs", "templates/post.hbs"] {
+            let config: Config =
+                toml::from_str(&format!("[collections.posts]\ntemplate = \"{template}\"\n"))
+                    .unwrap();
+            assert_eq!(
+                config.collections["posts"].template.as_deref(),
+                Some(template)
+            );
+        }
+        for template in [
+            "../shared.hbs",
+            "/abs/post.hbs",
+            "./post.hbs",
+            "a/../b.hbs",
+            "",
+        ] {
+            let error = toml::from_str::<Config>(&format!(
+                "[collections.posts]\ntemplate = \"{template}\"\n"
+            ))
+            .err()
+            .unwrap_or_else(|| panic!("{template:?} should be rejected"));
+            assert!(
+                error.to_string().contains("inside the collection"),
+                "{template}: {error}"
+            );
+        }
     }
 }

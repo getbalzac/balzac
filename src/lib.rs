@@ -204,6 +204,11 @@ fn discover_static_pages_in(
 
 pub fn discover_collections(parsed_config: &config::ResolvedConfig) -> Result<Vec<PageEntry>> {
     let mut pages = Vec::new();
+    // Lowercased output path -> item rendering it, to report duplicates. Case is
+    // ignored because macOS and Windows file systems store `Jan.html` and
+    // `jan.html` as one file, so the second item would overwrite the first.
+    let mut items_by_output: std::collections::HashMap<String, (PathBuf, String)> =
+        std::collections::HashMap::new();
 
     let dir_exists = fs::exists(&parsed_config.content_directory)?;
     if !dir_exists {
@@ -225,36 +230,49 @@ pub fn discover_collections(parsed_config: &config::ResolvedConfig) -> Result<Ve
         let collection_name = dir.file_name().to_string_lossy().to_string();
         log::debug!("Discovering collection: {collection_name}");
 
-        let details_page_path = parsed_config
-            .pages_directory
-            .join(&collection_name)
-            .join("details.hbs");
-        let has_details_page = fs::exists(&details_page_path)?;
-
-        if !has_details_page {
-            log::warn!("Collection {collection_name} has no details page, skipping");
+        let template_path = parsed_config.collection_template_path(&collection_name);
+        if !fs::exists(&template_path)? {
+            log::warn!(
+                "Collection {} has no template at {}, skipping",
+                collection_name,
+                template_path.display()
+            );
             continue;
         }
 
         let content_dir_path = parsed_config.content_directory.join(&collection_name);
+        let mut source_paths = Vec::new();
+        collect_markdown_files(&content_dir_path, &mut source_paths)?;
+        source_paths.sort();
 
-        for content_entry in fs::read_dir(&content_dir_path)? {
-            let content_file = content_entry?;
-            let content_file_path = content_file.path();
-
-            let extension = content_file_path.extension();
-            if extension.map(|e| e.to_string_lossy()) != Some("md".into()) {
-                log::debug!(
-                    "Skipping non-markdown file {} during discovery",
-                    content_file.file_name().to_string_lossy()
-                );
-                continue;
-            }
-
+        for content_file_path in source_paths {
             let Some(page) = collection_entry_from_source(parsed_config, &content_file_path)?
             else {
                 continue;
             };
+
+            if let Some((existing_source, existing_url)) = items_by_output.insert(
+                page.output_path.to_string_lossy().to_lowercase(),
+                (page.source_path.clone(), page.url_path.clone()),
+            ) {
+                let message = if existing_url == page.url_path {
+                    format!(
+                        "{} and {} both render to {}",
+                        existing_source.display(),
+                        page.source_path.display(),
+                        page.url_path
+                    )
+                } else {
+                    format!(
+                        "{} ({existing_url}) and {} ({}) differ only in case, so they \
+                         render to the same file on case-insensitive file systems",
+                        existing_source.display(),
+                        page.source_path.display(),
+                        page.url_path
+                    )
+                };
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, message).into());
+            }
 
             log::debug!(
                 "Discovered collection item: {} -> {}",
@@ -300,6 +318,30 @@ pub fn discover_site_pages(parsed_config: &config::ResolvedConfig) -> Result<Sit
     Ok(site_pages)
 }
 
+/// Recursively collects the markdown files under a collection directory.
+fn collect_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        // Symlinked folders are not followed: one pointing back up the tree
+        // would recurse forever.
+        if file_type.is_symlink() && path.is_dir() {
+            log::warn!("Skipping symlinked folder {} in collection", path.display());
+        } else if file_type.is_dir() {
+            collect_markdown_files(&path, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            files.push(path);
+        } else {
+            log::debug!(
+                "Skipping non-markdown file {} during discovery",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn render_pages(
     parsed_config: &config::ResolvedConfig,
     pages: &[PageEntry],
@@ -324,7 +366,7 @@ pub fn render_collection_items(
     render: &HandlebarsRenderer,
 ) -> Result<()> {
     let collections = build_collections_context(pages, render)?;
-    let mut created_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_collections: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for page in pages {
         let PageType::Collection {
@@ -334,12 +376,7 @@ pub fn render_collection_items(
             continue;
         };
 
-        if !created_dirs.contains(collection_name) {
-            let collection_output_dir = parsed_config.output_directory.join(collection_name);
-            if !fs::exists(&collection_output_dir)? {
-                fs::create_dir(&collection_output_dir)?;
-            }
-            created_dirs.insert(collection_name.clone());
+        if seen_collections.insert(collection_name.clone()) {
             log::info!("Rendering collection {collection_name}");
         }
 
@@ -602,7 +639,8 @@ pub fn is_supported_page_file(path: &Path) -> bool {
 /// Returns true when `source_path` is a template rendered by Balzac for other
 /// content rather than a page of its own, i.e. `pages/<name>/<template>` where:
 ///
-/// - `details.hbs` has a matching `content/<name>` directory (collection items)
+/// - the collection template (`details.hbs` unless `[collections.<name>]` sets
+///   `template`) has a matching `content/<name>` directory (collection items)
 /// - `list.hbs` has a `[listings.<name>]` entry (collection listing)
 /// - `term.hbs` or `taxonomy.hbs` has a `[taxonomies.<name>]` entry
 ///
@@ -613,18 +651,21 @@ pub fn is_page_template(parsed_config: &config::ResolvedConfig, source_path: &Pa
         return false;
     };
     let mut components = relative_path.components();
-    let (Some(section), Some(file_name), None) =
-        (components.next(), components.next(), components.next())
-    else {
+    let Some(section) = components.next() else {
         return false;
     };
     let section = section.as_os_str().to_string_lossy();
-
-    match file_name.as_os_str().to_str() {
-        Some("details.hbs") => parsed_config
+    if is_collection_template(parsed_config, source_path) {
+        return parsed_config
             .content_directory
             .join(section.as_ref())
-            .is_dir(),
+            .is_dir();
+    }
+    let (Some(file_name), None) = (components.next(), components.next()) else {
+        return false;
+    };
+
+    match file_name.as_os_str().to_str() {
         Some(listing::LISTING_TEMPLATE) => parsed_config.listings.contains_key(section.as_ref()),
         Some(listing::TERM_TEMPLATE | listing::TAXONOMY_TEMPLATE) => {
             parsed_config.taxonomies.contains_key(section.as_ref())
@@ -752,26 +793,160 @@ pub fn load_static_page_entry(
     Ok(Some(page))
 }
 
+/// Location of a collection item derived from its source path alone.
+struct CollectionItemLocation {
+    collection_name: String,
+    /// Folders between the collection directory and the file.
+    sub_directories: Vec<String>,
+    file_stem: String,
+}
+
+impl CollectionItemLocation {
+    fn from_source(parsed_config: &config::ResolvedConfig, source_path: &Path) -> Option<Self> {
+        if source_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            return None;
+        }
+        let relative_path = source_path
+            .strip_prefix(&parsed_config.content_directory)
+            .ok()?;
+        let mut segments = Vec::new();
+        for component in relative_path.components() {
+            match component {
+                std::path::Component::Normal(segment) => {
+                    segments.push(segment.to_string_lossy().to_string());
+                }
+                _ => return None,
+            }
+        }
+        if segments.len() < 2 {
+            return None;
+        }
+        segments.pop();
+        let collection_name = segments.remove(0);
+        let file_stem = source_path.file_stem()?.to_string_lossy().to_string();
+
+        Some(Self {
+            collection_name,
+            sub_directories: segments,
+            file_stem,
+        })
+    }
+
+    /// URL and output file of the item when published under `slug`, following
+    /// the configured `url_style`.
+    fn page_location(
+        &self,
+        parsed_config: &config::ResolvedConfig,
+        slug: &str,
+    ) -> Option<PageLocation> {
+        page_location(parsed_config, &self.route(slug))
+    }
+
+    /// URL segments of the item when published under `slug`.
+    fn route<'a>(&'a self, slug: &'a str) -> Vec<&'a str> {
+        std::iter::once(self.collection_name.as_str())
+            .chain(self.sub_directories.iter().map(String::as_str))
+            .chain([slug])
+            .collect()
+    }
+}
+
+/// Reads the `slug` frontmatter override, which replaces the file name in the URL.
+fn slug_from_frontmatter(
+    fm: &serde_json::Value,
+    source_path: &Path,
+) -> std::io::Result<Option<String>> {
+    let invalid = |reason: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid slug in {}: {}", source_path.display(), reason),
+        )
+    };
+
+    match fm.get("slug") {
+        None => Ok(None),
+        // `slug:` with no value is most likely a mistake, not a request for the default
+        Some(serde_json::Value::Null) => Err(invalid("must not be empty")),
+        Some(serde_json::Value::String(slug)) => {
+            if slug.is_empty() || slug == "." || slug == ".." {
+                return Err(invalid("must not be empty, \".\" or \"..\""));
+            }
+            if slug.contains(['/', '\\']) {
+                return Err(invalid("must be a single path segment without slashes"));
+            }
+            // These would change the URL's meaning (fragment, query, escapes) or need
+            // encoding, so the published URL could not reach the generated file
+            if slug.contains(['#', '?', '%']) || slug.chars().any(char::is_whitespace) {
+                return Err(invalid("must not contain '#', '?', '%' or whitespace"));
+            }
+            Ok(Some(slug.clone()))
+        }
+        Some(_) => Err(invalid("must be a string")),
+    }
+}
+
+/// Rejects URL segments that would make the published URL miss the item's
+/// file: `#` and `?` turn the rest of the URL into a fragment or query, hosts
+/// decode `%` escapes into a different name, browsers turn `\` into `/`, and a
+/// segment ending in `.html` clashes with the file of the item at its prefix:
+/// `/posts/a.html` is served by it, and a `posts/a.html/` folder cannot sit
+/// next to the `posts/a.html` file. Applies to collection, folder and file names
+/// as well as `slug`s; none of these characters ever produced a reachable page.
+fn check_url_segments(
+    location: &CollectionItemLocation,
+    slug: &str,
+    source_path: &Path,
+) -> std::io::Result<()> {
+    let invalid = |reason: String| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid URL for {}: {}", source_path.display(), reason),
+        )
+    };
+
+    let segments = std::iter::once(location.collection_name.as_str())
+        .chain(location.sub_directories.iter().map(String::as_str))
+        .chain([slug]);
+    for segment in segments {
+        if segment.contains(['#', '?', '%', '\\']) {
+            return Err(invalid(format!(
+                "\"{segment}\" must not contain '#', '?', '%' or '\\'"
+            )));
+        }
+    }
+    if let Some(folder) = location
+        .sub_directories
+        .iter()
+        .find(|folder| folder.to_ascii_lowercase().ends_with(".html"))
+    {
+        return Err(invalid(format!(
+            "folder \"{folder}\" must not end with \".html\""
+        )));
+    }
+    if slug.to_ascii_lowercase().ends_with(".html") {
+        return Err(invalid(format!("\"{slug}\" must not end with \".html\"")));
+    }
+    Ok(())
+}
+
+fn is_draft(fm: &serde_json::Value) -> bool {
+    matches!(fm.get("draft"), Some(serde_json::Value::Bool(true)))
+}
+
+/// Builds the page entry for a collection item, reading its frontmatter.
+///
+/// Returns `None` when the path is not a collection item, the collection has
+/// no template, the item is a draft outside of dev mode, or a static page
+/// renders to the same file (static pages take precedence).
 pub fn collection_entry_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> Result<Option<PageEntry>> {
-    let Some((collection_name, file_stem)) = collection_item_route(parsed_config, source_path)
-    else {
+    let Some((page, route)) = unshadowed_collection_entry(parsed_config, source_path)? else {
         return Ok(None);
     };
-
-    let details_page_path = parsed_config
-        .pages_directory
-        .join(&collection_name)
-        .join("details.hbs");
-    if !fs::exists(&details_page_path)? {
-        return Ok(None);
-    }
-
-    if let Some(static_source) =
-        static_page_for_collection_item(parsed_config, &collection_name, &file_stem)
-    {
+    let route: Vec<&str> = route.iter().map(String::as_str).collect();
+    if let Some(static_source) = static_page_for_collection_item(parsed_config, &route) {
         log::warn!(
             "Static page {} and collection item {} render to the same file; the static page wins",
             static_source.display(),
@@ -779,9 +954,23 @@ pub fn collection_entry_from_source(
         );
         return Ok(None);
     }
-    let Some(location) = page_location(parsed_config, &[&collection_name, &file_stem]) else {
+    Ok(Some(page))
+}
+
+/// Builds a collection item's page entry and route (`[collection, folders..., slug]`)
+/// without checking whether a static page renders to the same file.
+fn unshadowed_collection_entry(
+    parsed_config: &config::ResolvedConfig,
+    source_path: &Path,
+) -> Result<Option<(PageEntry, Vec<String>)>> {
+    let Some(item) = CollectionItemLocation::from_source(parsed_config, source_path) else {
         return Ok(None);
     };
+
+    let template_path = parsed_config.collection_template_path(&item.collection_name);
+    if !fs::exists(&template_path)? {
+        return Ok(None);
+    }
 
     let file_content = error::read_to_string(source_path)?;
     let parsed_content =
@@ -789,19 +978,50 @@ pub fn collection_entry_from_source(
             path: source_path.to_path_buf(),
             message: e.to_string(),
         })?;
-    let sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
 
-    Ok(Some(PageEntry {
+    let draft = is_draft(&parsed_content.fm);
+    if draft && !parsed_config.dev_mode {
+        log::debug!("Skipping draft {}", source_path.display());
+        return Ok(None);
+    }
+
+    let slug = slug_from_frontmatter(&parsed_content.fm, source_path)?
+        .unwrap_or_else(|| item.file_stem.clone());
+    check_url_segments(&item, &slug, source_path)?;
+    let Some(location) = item.page_location(parsed_config, &slug) else {
+        return Ok(None);
+    };
+    let mut sitemap_meta = SitemapMeta::from_frontmatter(&parsed_content.fm);
+    if draft {
+        sitemap_meta.exclude = true;
+    }
+
+    let route = item.route(&slug).into_iter().map(str::to_string).collect();
+    let page = PageEntry {
         url_path: location.url_path,
         source_path: source_path.to_path_buf(),
         output_path: location.output_path,
         page_type: PageType::Collection {
-            name: collection_name,
+            name: item.collection_name,
         },
         sitemap_meta,
         frontmatter: Some(parsed_content.fm),
         content: Some(parsed_content.content),
-    }))
+    };
+    Ok(Some((page, route)))
+}
+
+/// Whether `path` is the template of a collection (by default `<name>/details.hbs`).
+#[must_use]
+pub fn is_collection_template(parsed_config: &config::ResolvedConfig, path: &Path) -> bool {
+    let Ok(relative_path) = path.strip_prefix(&parsed_config.pages_directory) else {
+        return false;
+    };
+    let Some(collection_name) = relative_path.components().next() else {
+        return false;
+    };
+    let collection_name = collection_name.as_os_str().to_string_lossy();
+    parsed_config.collection_template_path(&collection_name) == path
 }
 
 pub fn render_static_page(
@@ -854,10 +1074,7 @@ pub fn render_collection_page(
 
     create_parent_dir(&page.output_path)?;
 
-    let details_page_path = parsed_config
-        .pages_directory
-        .join(collection_name)
-        .join("details.hbs");
+    let template_path = parsed_config.collection_template_path(collection_name);
     let raw_content = page
         .content
         .as_ref()
@@ -873,8 +1090,8 @@ pub fn render_collection_page(
 
     let rendered_result = render
         .render(
-            &details_page_path,
-            error::read_to_string(&details_page_path)?,
+            &template_path,
+            error::read_to_string(&template_path)?,
             merge_contexts(
                 parsed_config,
                 &serde_json::json!({
@@ -941,6 +1158,8 @@ pub(crate) fn remove_empty_parents(path: &Path, root: &Path) -> std::io::Result<
     Ok(())
 }
 
+/// Filename-based output path of a collection item, ignoring any `slug`
+/// override (the source may no longer exist to read it from).
 #[must_use]
 pub fn collection_output_path_from_source(
     parsed_config: &config::ResolvedConfig,
@@ -950,44 +1169,22 @@ pub fn collection_output_path_from_source(
         .map(|(_, location)| location.output_path)
 }
 
-/// Derive a collection item's name and location from its path alone (no file read),
-/// e.g. `content/posts/hello.md` -> (`posts`, `/posts/hello`). Returns `None` when a
-/// static page owns the same output file.
+/// Derive a collection item's name and location from its path alone (no file
+/// read, so any `slug` override is ignored), e.g. `content/posts/2024/hello.md`
+/// -> (`posts`, `/posts/2024/hello`). Returns `None` when a static page owns
+/// the same output file.
 #[must_use]
 pub fn collection_location_from_source(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> Option<(String, PageLocation)> {
-    let (collection_name, file_stem) = collection_item_route(parsed_config, source_path)?;
-    if static_page_for_collection_item(parsed_config, &collection_name, &file_stem).is_some() {
+    let item = CollectionItemLocation::from_source(parsed_config, source_path)?;
+    let route = item.route(&item.file_stem);
+    if static_page_for_collection_item(parsed_config, &route).is_some() {
         return None;
     }
-    let location = page_location(parsed_config, &[&collection_name, &file_stem])?;
-    Some((collection_name, location))
-}
-
-/// Splits `content/<collection>/<slug>.md` into its collection name and slug.
-fn collection_item_route(
-    parsed_config: &config::ResolvedConfig,
-    source_path: &Path,
-) -> Option<(String, String)> {
-    let relative_path = source_path
-        .strip_prefix(&parsed_config.content_directory)
-        .ok()?;
-    let mut components = relative_path.components();
-    let collection_name = components.next()?.as_os_str().to_string_lossy().to_string();
-    let file_name = components.next()?;
-    if components.next().is_some()
-        || source_path.extension().and_then(|ext| ext.to_str()) != Some("md")
-    {
-        return None;
-    }
-
-    let file_stem = Path::new(file_name.as_os_str())
-        .file_stem()?
-        .to_string_lossy()
-        .to_string();
-    Some((collection_name, file_stem))
+    let location = page_location(parsed_config, &route)?;
+    Some((item.collection_name, location))
 }
 
 /// Logical route of a page file relative to the pages directory, one entry per
@@ -1010,25 +1207,27 @@ fn static_page_route(relative_path: &Path) -> Option<Vec<String>> {
 }
 
 /// Returns the static page that renders to the same output file as the
-/// collection item `content/<collection_name>/<file_stem>.md`, if any
-/// (`pages/posts/hello.hbs` or `pages/posts/hello/index.hbs` for
-/// `content/posts/hello.md`). Static pages take precedence in that case.
+/// collection item at `route` (`[collection, folders..., slug]`), if any:
+/// `pages/posts/hello.hbs` or `pages/posts/hello/index.hbs` for `/posts/hello`.
+/// Static pages take precedence in that case.
 #[must_use]
 pub fn static_page_for_collection_item(
     parsed_config: &config::ResolvedConfig,
-    collection_name: &str,
-    file_stem: &str,
+    route: &[&str],
 ) -> Option<PathBuf> {
-    let item_output = page_location(parsed_config, &[collection_name, file_stem])?.output_path;
-    let collection_pages_dir = parsed_config.pages_directory.join(collection_name);
+    let (last, parents) = route.split_last()?;
+    let item_output = page_location(parsed_config, route)?.output_path;
+    let parent_dir = parents
+        .iter()
+        .fold(parsed_config.pages_directory.clone(), |dir, segment| {
+            dir.join(segment)
+        });
     ["hbs", "handlebars", "html"]
         .iter()
         .flat_map(|ext| {
             [
-                collection_pages_dir.join(format!("{file_stem}.{ext}")),
-                collection_pages_dir
-                    .join(file_stem)
-                    .join(format!("index.{ext}")),
+                parent_dir.join(format!("{last}.{ext}")),
+                parent_dir.join(last).join(format!("index.{ext}")),
             ]
         })
         .find(|candidate| {
@@ -1040,27 +1239,30 @@ pub fn static_page_for_collection_item(
 
 /// Returns the collection item that renders to the same output file as the
 /// static page at `source_path`, if any (e.g. `pages/posts/hello.hbs` and
-/// `content/posts/hello.md`).
+/// `content/posts/hello.md`, or an item with `slug: hello`). Reads the items of
+/// the collection the page sits in, since `slug`s can change their URL.
 #[must_use]
 pub fn collection_item_for_static_page(
     parsed_config: &config::ResolvedConfig,
     source_path: &Path,
 ) -> Option<PathBuf> {
+    let page_output = static_page_entry_from_source(parsed_config, source_path)?.output_path;
     let relative_path = source_path
         .strip_prefix(&parsed_config.pages_directory)
         .ok()?;
-    let route = static_page_route(relative_path)?;
-    let [collection_name, file_stem] = route.as_slice() else {
+    let collection_name = static_page_route(relative_path)?.into_iter().next()?;
+    let collection_dir = parsed_config.content_directory.join(collection_name);
+    if !collection_dir.is_dir() {
         return None;
-    };
-    let item = parsed_config
-        .content_directory
-        .join(collection_name)
-        .join(format!("{file_stem}.md"));
-    let details_page = parsed_config
-        .pages_directory
-        .join(collection_name)
-        .join("details.hbs");
-
-    (item.is_file() && details_page.is_file()).then_some(item)
+    }
+    let mut source_paths = Vec::new();
+    collect_markdown_files(&collection_dir, &mut source_paths).ok()?;
+    source_paths.sort();
+    source_paths.into_iter().find(|item_source| {
+        // invalid items fail the build anyway, which a full rebuild reports
+        unshadowed_collection_entry(parsed_config, item_source)
+            .ok()
+            .flatten()
+            .is_some_and(|(page, _)| page.output_path == page_output)
+    })
 }
