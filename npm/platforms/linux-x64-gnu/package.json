@@ -1,0 +1,29 @@
+{
+  "name": "@balzac/linux-x64-gnu",
+  "version": "0.0.0",
+  "description": "The Linux 64-bit (glibc) binary for balzac, a blazingly fast static site generator",
+  "license": "MIT",
+  "homepage": "https://balzac.rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getbalzac/balzac.git",
+    "directory": "npm/platforms/linux-x64-gnu"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

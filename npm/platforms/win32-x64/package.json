@@ -1,0 +1,26 @@
+{
+  "name": "@balzac/win32-x64",
+  "version": "0.0.0",
+  "description": "The Windows 64-bit binary for balzac, a blazingly fast static site generator",
+  "license": "MIT",
+  "homepage": "https://balzac.rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getbalzac/balzac.git",
+    "directory": "npm/platforms/win32-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
