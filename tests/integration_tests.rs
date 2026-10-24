@@ -3182,3 +3182,75 @@ fn test_configured_collection_template_is_not_a_static_page() {
     // `details.hbs` is not the template here, so it is a regular page
     assert_eq!(urls, vec!["/posts/details"]);
 }
+
+#[test]
+fn test_template_helpers_in_pages_and_collections() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    let tags_dir = temp_path.join("tags");
+    fs::create_dir(&tags_dir).expect("Failed to create tags dir");
+    // tag templates rendered by the markdown helper can use helpers too
+    fs::write(
+        tags_dir.join("a.hbs"),
+        r#"<a href="{{url_for props.href}}">{{{content}}}</a>"#,
+    )
+    .expect("Failed to write tag template");
+
+    let blog_pages_dir = pages_dir.join("blog");
+    let blog_content_dir = content_dir.join("blog");
+    fs::create_dir(&blog_pages_dir).expect("Failed to create blog pages dir");
+    fs::create_dir_all(&blog_content_dir).expect("Failed to create blog content dir");
+
+    fs::write(
+        blog_pages_dir.join("details.hbs"),
+        r#"<time>{{date fm.date "%B %-d, %Y"}}</time><p>{{markdown fm.summary inline=true}}</p><link href="{{asset "site.css"}}">"#,
+    )
+    .expect("Failed to write details template");
+    fs::write(
+        pages_dir.join("index.hbs"),
+        r#"{{#each (limit (sort collections.blog "fm.title") 1)}}<a href="{{url_for url}}">{{fm.title}}</a>{{/each}}|{{len (where collections.blog "fm.featured" true)}}|{{slugify "Hello World"}}"#,
+    )
+    .expect("Failed to write index page");
+
+    fs::write(
+        blog_content_dir.join("first.md"),
+        "---\ntitle: Zebra\ndate: 2025-03-09\nsummary: See [the docs](/docs/)\n---\n\nBody.",
+    )
+    .expect("Failed to write post");
+    fs::write(
+        blog_content_dir.join("second.md"),
+        "---\ntitle: Aardvark\ndate: 2024-12-25\nfeatured: true\n---\n\nBody.",
+    )
+    .expect("Failed to write post");
+
+    let config_toml = format!(
+        "output_directory = {:?}\npages_directory = {:?}\ncontent_directory = {:?}\ntags_directory = {:?}\nbase_url = \"https://example.com/site/\"\n",
+        output_dir.to_string_lossy(),
+        pages_dir.to_string_lossy(),
+        content_dir.to_string_lossy(),
+        tags_dir.to_string_lossy(),
+    );
+    let config: Config = toml::from_str(&config_toml).expect("Failed to parse config");
+    let resolved_config = config.resolve(&temp_path);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let site_pages = discover_site_pages(&resolved_config).expect("Failed to discover pages");
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
+    render_pages(&resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
+    render_collection_items(&resolved_config, site_pages.all(), &renderer)
+        .expect("Failed to render collections");
+
+    let read =
+        |path: &str| fs::read_to_string(output_dir.join(path)).expect("Failed to read output");
+    assert_eq!(
+        read("blog/first.html"),
+        r#"<time>March 9, 2025</time><p>See <a href="/site/docs/">the docs</a></p><link href="/site/assets/site.css">"#
+    );
+    assert_eq!(
+        read("index.html"),
+        r#"<a href="/site/blog/second">Aardvark</a>|1|hello-world"#
+    );
+}

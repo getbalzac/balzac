@@ -5,6 +5,7 @@ pub mod context;
 pub mod dev;
 pub mod error;
 pub mod feed;
+pub mod helpers;
 pub mod hooks;
 pub mod listing;
 pub mod markdown;
