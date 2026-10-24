@@ -303,6 +303,20 @@ pub struct ViteBundler {
     pub dev_origin: String,
 }
 
+/// Asset pipeline options, configured under `[assets]`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetsConfig {
+    /// Copy assets under content-hashed names (`site.3f2a1b9c.css`), which the
+    /// `asset` helper links to. Ignored by `balzac dev`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fingerprint: bool,
+    /// Write `<output>/assets/manifest.json`, mapping each asset to its
+    /// fingerprinted name. Needs `fingerprint`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manifest: bool,
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Bundler {
@@ -428,6 +442,8 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundler: Option<Bundler>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<AssetsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sitemap: Option<SitemapConfig>,
@@ -459,6 +475,7 @@ impl Default for Config {
             global: None,
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: None,
             sitemap: None,
             robots: None,
@@ -498,6 +515,7 @@ impl Config {
             global: self.global.clone(),
             hooks: self.hooks.clone(),
             bundler: self.bundler.clone(),
+            assets: self.assets.clone().unwrap_or_default(),
             base_url: self.base_url.clone(),
             sitemap: self.sitemap.clone(),
             robots: self.robots.clone(),
@@ -531,6 +549,7 @@ pub struct ResolvedConfig {
     pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub hooks: Option<Hooks>,
     pub bundler: Option<Bundler>,
+    pub assets: AssetsConfig,
     pub base_url: Option<String>,
     pub sitemap: Option<SitemapConfig>,
     pub robots: Option<RobotsConfig>,
@@ -789,6 +808,7 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: None,
             sitemap: None,
             robots: None,
@@ -816,6 +836,7 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: None,
             sitemap: None,
             robots: None,
@@ -847,6 +868,7 @@ mod tests {
             global: Some(global),
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: None,
             sitemap: None,
             robots: None,
@@ -884,6 +906,7 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: None,
             sitemap: None,
             robots: None,
@@ -915,6 +938,7 @@ mod tests {
             global: None,
             hooks: None,
             bundler: None,
+            assets: None,
             base_url: Some("https://example.com".to_string()),
             sitemap: Some(SitemapConfig {
                 enabled: true,
@@ -1145,6 +1169,18 @@ mod tests {
         assert!(!markdown.heading_ids);
     }
 
+    #[test]
+    fn test_assets_config() {
+        let resolved = Config::from_toml("").unwrap().resolve(Path::new("."));
+        assert!(!resolved.assets.fingerprint);
+        assert!(!resolved.assets.manifest);
+
+        let parsed = Config::from_toml("[assets]\nfingerprint = true\n").unwrap();
+        let assets = parsed.resolve(Path::new(".")).assets;
+        assert!(assets.fingerprint);
+        assert!(!assets.manifest);
+    }
+
     fn parse_error(content: &str) -> ConfigError {
         match Config::from_toml(content) {
             Ok(_) => panic!("expected {content:?} to be rejected"),
@@ -1185,6 +1221,7 @@ mod tests {
             ("[sitemap]\nfile_name = \"map.xml\"\n", Some("filename")),
             ("[robots]\ndisalow = []\n", Some("disallow")),
             ("[markdown]\nfootnote = true\n", Some("footnotes")),
+            ("[assets]\nfingerprints = true\n", Some("fingerprint")),
             ("[listings.posts]\nper_pag = 3\n", Some("per_page")),
             ("[taxonomies.tags]\ncollection = []\n", Some("collections")),
             ("[feed]\nlimt = 3\n", Some("limit")),

@@ -10,6 +10,7 @@ use handlebars::{
 };
 
 use crate::config::ResolvedConfig;
+use crate::fingerprint::Fingerprints;
 use crate::renderer::HandlebarsRenderer;
 
 /// Registers every built-in helper except `vite_url`, which depends on the
@@ -24,14 +25,17 @@ pub fn register(
         "url_for",
         Box::new(UrlHelper {
             urls: site_urls.clone(),
-            asset: false,
+            asset: None,
         }),
     );
+    // Fingerprinted names are for builds; dev serves the assets as they are.
+    let fingerprints = (configuration.assets.fingerprint && !configuration.dev_mode)
+        .then(|| Fingerprints::new(&configuration.assets_directory));
     registry.register_helper(
         "asset",
         Box::new(UrlHelper {
             urls: site_urls,
-            asset: true,
+            asset: Some(AssetUrls { fingerprints }),
         }),
     );
     registry.register_helper("term_url", Box::new(term_url_helper));
@@ -120,7 +124,7 @@ impl SiteUrls {
     }
 }
 
-fn is_external(url: &str) -> bool {
+pub(crate) fn is_external(url: &str) -> bool {
     if url.starts_with("//") {
         return true;
     }
@@ -136,7 +140,31 @@ fn is_external(url: &str) -> bool {
 /// both accepting `absolute=true`.
 struct UrlHelper {
     urls: SiteUrls,
-    asset: bool,
+    /// Set for `asset`.
+    asset: Option<AssetUrls>,
+}
+
+struct AssetUrls {
+    /// Set when assets are published under fingerprinted names.
+    fingerprints: Option<Fingerprints>,
+}
+
+impl AssetUrls {
+    /// `css/site.css?v=1` -> `/assets/css/site.<hash>.css?v=1`. Paths that are
+    /// not files of the assets directory are linked to as they are.
+    fn path(&self, path: &str) -> Result<String, String> {
+        let path = path.trim_start_matches('/');
+        if let Some(fingerprints) = &self.fingerprints {
+            let (file, suffix) = path.split_at(path.find(['?', '#']).unwrap_or(path.len()));
+            if let Some(asset) = fingerprints
+                .get(file)
+                .map_err(|e| format!("failed to fingerprint {file}: {e}"))?
+            {
+                return Ok(format!("/assets/{}{suffix}", asset.path));
+            }
+        }
+        Ok(format!("/assets/{path}"))
+    }
 }
 
 impl HelperDef for UrlHelper {
@@ -156,10 +184,11 @@ impl HelperDef for UrlHelper {
                 )));
             }
         };
-        let path = if self.asset {
-            format!("/assets/{}", path.trim_start_matches('/'))
-        } else {
-            path.clone()
+        let path = match &self.asset {
+            Some(asset) => asset
+                .path(path)
+                .map_err(|e| render_error(format!("{name}: {e}")))?,
+            None => path.clone(),
         };
         let absolute = h
             .hash_get("absolute")
@@ -588,6 +617,45 @@ mod tests {
                 &json!({})
             ),
             "/blog/assets/css/site.css|/blog/assets/js/app.js"
+        );
+    }
+
+    fn fingerprinted_config(assets: &Path) -> Config {
+        std::fs::create_dir_all(assets.join("css")).unwrap();
+        std::fs::write(assets.join("css/site.css"), "hello").unwrap();
+        Config {
+            assets_directory: assets.to_string_lossy().to_string(),
+            assets: Some(crate::config::AssetsConfig {
+                fingerprint: true,
+                manifest: false,
+            }),
+            ..with_base_url("https://example.com/blog")
+        }
+    }
+
+    #[test]
+    fn asset_links_to_fingerprinted_names() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config = fingerprinted_config(temp.path());
+        assert_eq!(
+            render_with(
+                &config,
+                r#"{{asset "css/site.css"}}|{{{asset "/css/site.css?v=1" absolute=true}}}|{{asset "js/missing.js"}}"#,
+                &json!({})
+            ),
+            "/blog/assets/css/site.2cf24dba.css|https://example.com/blog/assets/css/site.2cf24dba.css?v=1|/blog/assets/js/missing.js"
+        );
+    }
+
+    #[test]
+    fn asset_ignores_fingerprinting_in_dev_mode() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config = fingerprinted_config(temp.path());
+        assert_eq!(
+            registry_for(&config, true)
+                .render_template(r#"{{asset "css/site.css"}}"#, &json!({}))
+                .unwrap(),
+            "/assets/css/site.css"
         );
     }
 

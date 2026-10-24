@@ -5,6 +5,7 @@ pub mod context;
 pub mod dev;
 pub mod error;
 pub mod feed;
+pub mod fingerprint;
 pub mod helpers;
 pub mod hooks;
 pub mod listing;
@@ -55,7 +56,9 @@ pub fn make_dist_folder(parsed_config: &config::ResolvedConfig) -> std::io::Resu
 }
 
 /// Whether `output_path` is where `add_assets` copies a file from the assets
-/// directory, e.g. `dist/assets/index.html` for `assets/index.html`.
+/// directory, e.g. `dist/assets/index.html` for `assets/index.html`. Fingerprinted
+/// builds publish `index.<hash>.html` instead, but `balzac dev` copies assets under
+/// their own names, so the plain name is kept for a project to work in both.
 #[must_use]
 pub fn is_asset_output(parsed_config: &config::ResolvedConfig, output_path: &Path) -> bool {
     let Ok(relative) = output_path.strip_prefix(parsed_config.output_directory.join("assets"))
@@ -67,6 +70,9 @@ pub fn is_asset_output(parsed_config: &config::ResolvedConfig, output_path: &Pat
 
 pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.assets_directory)?;
+    // Dev serves the assets under their own names, which the `asset` helper links to there.
+    let fingerprints = (parsed_config.assets.fingerprint && !parsed_config.dev_mode)
+        .then(|| fingerprint::Fingerprints::new(&parsed_config.assets_directory));
 
     if dir_exists {
         // The output directory may live inside the assets directory; never copy it into itself.
@@ -79,26 +85,64 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
             &parsed_config.assets_directory,
             &destination,
             &output_directory,
+            fingerprints.as_ref(),
         )?;
     } else {
         log::debug!("Assets directory does not exist, skipping");
     }
 
+    if parsed_config.assets.manifest && !parsed_config.dev_mode {
+        match &fingerprints {
+            Some(fingerprints) => write_asset_manifest(parsed_config, fingerprints)?,
+            None => log::warn!(
+                "[assets] manifest needs fingerprint = true, no asset manifest is written"
+            ),
+        }
+    }
+
     Ok(())
 }
 
-fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
+/// Writes `<output>/assets/manifest.json`: source path -> fingerprinted path,
+/// both relative to the assets directory.
+fn write_asset_manifest(
+    parsed_config: &config::ResolvedConfig,
+    fingerprints: &fingerprint::Fingerprints,
+) -> std::io::Result<()> {
+    let destination = parsed_config.output_directory.join("assets");
+    fs::create_dir_all(&destination)?;
+    let path = destination.join(fingerprint::MANIFEST_FILE);
+    if fs::exists(&path)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "the asset manifest would overwrite the rendered page at {}",
+                path.display()
+            ),
+        ));
+    }
+    let manifest = serde_json::to_string_pretty(&fingerprints.manifest())?;
+    log::info!("Writing asset manifest to {}", path.display());
+    fs::write(path, manifest)
+}
+
+fn copy_dir_recursive(
+    source: &Path,
+    destination: &Path,
+    excluded: &Path,
+    fingerprints: Option<&fingerprint::Fingerprints>,
+) -> std::io::Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
-        let target = destination.join(entry.file_name());
+        let mut target = destination.join(entry.file_name());
 
         if entry.file_type()?.is_dir() {
             if fs::canonicalize(entry.path())? == excluded {
                 log::debug!("Skipping output directory {}", entry.path().display());
                 continue;
             }
-            copy_dir_recursive(&entry.path(), &target, excluded)?;
+            copy_dir_recursive(&entry.path(), &target, excluded, fingerprints)?;
             continue;
         }
 
@@ -110,6 +154,16 @@ fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std
                 entry.path().display()
             );
             continue;
+        }
+
+        let mut rewritten = None;
+        if let Some(fingerprints) = fingerprints
+            && let Some(asset) = fingerprints.get_file(&entry.path())?
+        {
+            if let Some(name) = asset.path.rsplit('/').next() {
+                target = destination.join(name);
+            }
+            rewritten = asset.rewritten;
         }
 
         // Only a rendered page can be here already (e.g. a directory-style
@@ -125,7 +179,12 @@ fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std
             ));
         }
         log::debug!("Copying {} to {}", entry.path().display(), target.display());
-        fs::copy(entry.path(), target)?;
+        match rewritten {
+            Some(contents) => fs::write(target, contents)?,
+            None => {
+                fs::copy(entry.path(), target)?;
+            }
+        }
     }
     Ok(())
 }
