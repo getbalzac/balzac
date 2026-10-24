@@ -11,6 +11,8 @@ pub mod listing;
 pub mod markdown;
 pub mod renderer;
 pub mod robots;
+#[cfg(feature = "script-helpers")]
+pub mod script_helpers;
 pub mod sitemap;
 pub mod url;
 pub mod vite;

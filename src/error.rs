@@ -32,6 +32,9 @@ pub enum Error {
         page: Option<PathBuf>,
     },
 
+    #[error("invalid helper script {}: {message}", display_path(path))]
+    Script { path: PathBuf, message: String },
+
     #[error("{0}")]
     Vite(String),
 
@@ -72,7 +75,7 @@ impl Error {
 
 /// `path` relative to the working directory when it is inside it, without
 /// `.` components: resolved project paths look like `/site/./pages/index.hbs`.
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     let path: PathBuf = path.components().collect();
     std::env::current_dir()
         .ok()

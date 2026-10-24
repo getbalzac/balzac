@@ -180,6 +180,26 @@ impl HandlebarsRenderer<'_> {
         }
     }
 
+    #[cfg(feature = "script-helpers")]
+    fn register_script_helpers(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        crate::script_helpers::register_script_helpers(
+            &mut self.registry,
+            &configuration.helpers_directory,
+        )
+    }
+
+    #[cfg(not(feature = "script-helpers"))]
+    #[allow(clippy::unused_self)] // same signature as the script-helpers variant
+    fn register_script_helpers(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
+        if fs::exists(&configuration.helpers_directory)? {
+            log::warn!(
+                "Ignoring {}: this build of Balzac has no script helper support (`script-helpers` feature)",
+                configuration.helpers_directory.display()
+            );
+        }
+        Ok(())
+    }
+
     fn get_tag_name(value: &NodeValue) -> Option<String> {
         match value {
             NodeValue::Link(_) => Some("a".to_string()),
@@ -456,7 +476,9 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
         self.register_partials(configuration)?;
         self.register_layouts(configuration)?;
         self.register_tag_templates(configuration)?;
-        self.register_helpers(configuration)
+        self.register_helpers(configuration)?;
+        // After the built-in helpers, so a script can replace one of them
+        self.register_script_helpers(configuration)
     }
     fn new(configuration: &config::ResolvedConfig) -> HandlebarsRenderer<'a> {
         let reg = Handlebars::new();

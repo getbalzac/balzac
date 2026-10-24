@@ -414,6 +414,11 @@ pub struct Config {
         skip_serializing_if = "is_default_tags_directory"
     )]
     pub tags_directory: String,
+    #[serde(
+        default = "default_helpers_directory",
+        skip_serializing_if = "is_default_helpers_directory"
+    )]
+    pub helpers_directory: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markdown: Option<MarkdownConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -449,6 +454,7 @@ impl Default for Config {
             assets_directory: default_assets_directory(),
             content_directory: default_content_directory(),
             tags_directory: default_tags_directory(),
+            helpers_directory: default_helpers_directory(),
             markdown: None,
             global: None,
             hooks: None,
@@ -487,6 +493,7 @@ impl Config {
             assets_directory: Self::resolve_path(&self.assets_directory, root),
             content_directory: Self::resolve_path(&self.content_directory, root),
             tags_directory: Self::resolve_path(&self.tags_directory, root),
+            helpers_directory: Self::resolve_path(&self.helpers_directory, root),
             markdown: self.markdown.clone().unwrap_or_default(),
             global: self.global.clone(),
             hooks: self.hooks.clone(),
@@ -519,6 +526,7 @@ pub struct ResolvedConfig {
     pub assets_directory: std::path::PathBuf,
     pub content_directory: std::path::PathBuf,
     pub tags_directory: std::path::PathBuf,
+    pub helpers_directory: std::path::PathBuf,
     pub markdown: MarkdownConfig,
     pub global: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub hooks: Option<Hooks>,
@@ -585,6 +593,14 @@ fn default_tags_directory() -> String {
 
 fn is_default_tags_directory(s: &String) -> bool {
     s == &default_tags_directory()
+}
+
+fn default_helpers_directory() -> String {
+    "./helpers".to_string()
+}
+
+fn is_default_helpers_directory(s: &String) -> bool {
+    s == &default_helpers_directory()
 }
 
 fn is_default_vite_dev_origin(s: &String) -> bool {
@@ -768,6 +784,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            helpers_directory: "./helpers".to_string(),
             markdown: None,
             global: None,
             hooks: None,
@@ -794,6 +811,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            helpers_directory: "./helpers".to_string(),
             markdown: None,
             global: None,
             hooks: None,
@@ -824,6 +842,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            helpers_directory: "./helpers".to_string(),
             markdown: None,
             global: Some(global),
             hooks: None,
@@ -860,6 +879,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            helpers_directory: "./helpers".to_string(),
             markdown: None,
             global: None,
             hooks: None,
@@ -890,6 +910,7 @@ mod tests {
             assets_directory: "./assets".to_string(),
             content_directory: "./content".to_string(),
             tags_directory: "./tags".to_string(),
+            helpers_directory: "./helpers".to_string(),
             markdown: None,
             global: None,
             hooks: None,

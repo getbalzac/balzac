@@ -78,6 +78,7 @@ fn test_partials_registration() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -125,6 +126,7 @@ fn test_partials_registration_without_folder() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -178,6 +180,7 @@ fn test_full_workflow_single_page() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -245,6 +248,7 @@ fn test_full_workflow_multiple_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -322,6 +326,7 @@ fn test_workflow_with_global_data() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: Some(global),
         hooks: None,
@@ -378,6 +383,7 @@ fn test_make_dist_folder_creates_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -424,6 +430,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -472,6 +479,7 @@ fn test_workflow_preserves_file_extensions() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -531,6 +539,7 @@ fn test_template_with_conditionals() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: Some(global),
         hooks: None,
@@ -587,6 +596,7 @@ fn test_sitemap_generation_with_static_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -691,6 +701,7 @@ fn test_sitemap_generation_with_collections() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -799,6 +810,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -860,6 +872,7 @@ fn test_no_sitemap_without_base_url() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -945,6 +958,7 @@ fn test_custom_tag_renderer_for_links() {
         assets_directory: temp_path.join("assets").to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: tags_dir.to_string_lossy().to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: None,
         hooks: None,
@@ -1052,6 +1066,7 @@ fn test_collections_available_in_static_and_details_pages() {
         assets_directory: assets_dir.to_string_lossy().to_string(),
         content_directory: content_dir.to_string_lossy().to_string(),
         tags_directory: "./tags".to_string(),
+        helpers_directory: "./helpers".to_string(),
         markdown: None,
         global: Some(global),
         hooks: None,
@@ -3252,5 +3267,54 @@ fn test_template_helpers_in_pages_and_collections() {
     assert_eq!(
         read("index.html"),
         r#"<a href="/site/blog/second">Aardvark</a>|1|hello-world"#
+    );
+}
+
+#[cfg(feature = "script-helpers")]
+#[test]
+fn test_script_helpers_from_configured_directory() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+    let helpers_dir = temp_path.join("site_helpers");
+    fs::create_dir(&helpers_dir).expect("Failed to create helpers directory");
+    // The example from the README
+    fs::write(
+        helpers_dir.join("truncate.rhai"),
+        r#"let text = params[0];
+let length = if "length" in hash { hash.length } else { 80 };
+if text.len() <= length { text } else { text.sub_string(0, length) + "…" }
+"#,
+    )
+    .expect("Failed to write helper");
+    fs::write(
+        pages_dir.join("index.hbs"),
+        "<p>{{truncate description length=5}}</p><p>{{truncate description}}</p>",
+    )
+    .expect("Failed to write template");
+
+    let mut global = HashMap::new();
+    global.insert(
+        "description".to_string(),
+        serde_json::json!("Hello, world!"),
+    );
+    let config = Config {
+        output_directory: output_dir.to_string_lossy().to_string(),
+        pages_directory: pages_dir.to_string_lossy().to_string(),
+        helpers_directory: "./site_helpers".to_string(),
+        global: Some(global),
+        ..Config::default()
+    };
+    let resolved_config = config.resolve(&temp_path);
+
+    let mut renderer = HandlebarsRenderer::new(&resolved_config);
+    renderer
+        .init(&resolved_config)
+        .expect("Failed to init renderer");
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+    let pages = discover_static_pages(&resolved_config).expect("Failed to discover pages");
+    render_pages(&resolved_config, &pages, &renderer).expect("Failed to render static pages");
+
+    assert_eq!(
+        fs::read_to_string(output_dir.join("index.html")).unwrap(),
+        "<p>Hello…</p><p>Hello, world!</p>"
     );
 }

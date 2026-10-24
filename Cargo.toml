@@ -21,6 +21,8 @@ comrak = { version = "0.28", default-features = false }
 handlebars = "6.3.2"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 log = "0.4.29"
+# used by script_helpers.rs; same version range and features as handlebars' script_helper, so it is the same crate
+rhai = { version = "1.16", features = ["sync", "serde"], optional = true }
 serde_yaml = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.148"
@@ -31,6 +33,11 @@ strsim = "0.11"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-fancy"] }
 toml = "0.9.10"
 thiserror = "2"
+
+[features]
+default = ["script-helpers"]
+# user-defined Rhai helpers (helpers/*.rhai); adds ~2 MiB to the release binary
+script-helpers = ["handlebars/script_helper", "dep:rhai"]
 
 [dev-dependencies]
 tempfile = "3.10"
