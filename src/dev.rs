@@ -10,9 +10,10 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::config::{Config, ResolvedConfig, UrlStyle};
+use crate::config::{Config, Hooks, ResolvedConfig, UrlStyle};
 use crate::context::build_collections_context;
 use crate::error::Result;
+use crate::hooks::{HookExecutor, HookPhase};
 use crate::listing::render_listing_pages;
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
@@ -81,7 +82,9 @@ pub fn run(root: &Path, host: &str, port: u16) -> Result<()> {
         }
 
         // A failed build keeps the server running: the error is shown in the
-        // browser until a later build succeeds.
+        // browser until a later build succeeds. Every outcome re-snapshots
+        // after the rebuild, so files written by hooks (which run
+        // synchronously) during it never retrigger a rebuild.
         let reload_messages = match session.process_changes(&debounced_changes) {
             Ok(messages) => messages,
             Err(error) => {
@@ -114,6 +117,16 @@ pub fn run(root: &Path, host: &str, port: u16) -> Result<()> {
 struct DevSession {
     root: PathBuf,
     resolved_config: ResolvedConfig,
+    /// Hooks to run, only set when `[hooks] dev = true`.
+    hooks: Option<Hooks>,
+    /// Set while re-applying files written by hooks, so hooks don't rerun.
+    hooks_paused: bool,
+    /// Baselines for the hook writes of a full build: assets are snapshotted
+    /// once copied, so writes the build copied are not applied again; other
+    /// sources right after `render_init_before`, before anything is read, so
+    /// no write is missed, at the cost of re-applying the (rare) source writes
+    /// of `render_init_after`, `build_before` and `render_before`.
+    full_build_baselines: Option<(Snapshot, Snapshot)>,
     /// Output files of the generated listing pages from the last render, so
     /// pages that are no longer generated can be removed.
     listing_outputs: BTreeSet<PathBuf>,
@@ -131,12 +144,14 @@ impl DevSession {
         let mut session = Self {
             root: root.to_path_buf(),
             resolved_config,
+            hooks: dev_hooks(parsed_config),
+            hooks_paused: false,
+            full_build_baselines: None,
             listing_outputs: BTreeSet::new(),
             feed_paths: BTreeSet::new(),
             build_error: None,
         };
-        DevSession::log_ignored_hooks(&parsed_config);
-        let result = session.build_current_config();
+        let result = session.initial_build();
         if let Err(error) = session.record_build(result) {
             log::error!("Build failed: {error}");
         }
@@ -153,8 +168,150 @@ impl DevSession {
         if self.build_error.is_some() {
             plan = ChangePlan::FullReload;
         }
-        let result = self.apply_change_plan(plan);
+        let result = self.apply_with_hook_writes(plan);
         self.record_build(result)
+    }
+
+    fn initial_build(&mut self) -> Result<()> {
+        let before = self.hook_snapshot()?;
+        self.build_current_config()?;
+        self.apply_hook_writes(before.as_ref())?;
+        Ok(())
+    }
+
+    fn apply_with_hook_writes(&mut self, plan: ChangePlan) -> Result<Vec<ReloadMessage>> {
+        self.full_build_baselines = None;
+        let before = self.hook_snapshot()?;
+        let messages = self.apply_change_plan(plan)?;
+        let hook_messages = self.apply_hook_writes(before.as_ref())?;
+        Ok(merge_reload_messages(messages, hook_messages))
+    }
+
+    /// Snapshot of the watched files before a (re)build, when hooks may run.
+    fn hook_snapshot(&self) -> std::io::Result<Option<Snapshot>> {
+        if self.hooks.is_none() || self.hooks_paused {
+            return Ok(None);
+        }
+        capture_snapshot(&self.resolved_config).map(Some)
+    }
+
+    /// Applies, once and with hooks paused, the watched files that hooks wrote
+    /// during a (re)build, e.g. `assets/` written by `render_before` in a
+    /// targeted rebuild, which would otherwise not reach the output directory.
+    fn apply_hook_writes(&mut self, before: Option<&Snapshot>) -> Result<Vec<ReloadMessage>> {
+        // a full build records baselines even when it is the one enabling hooks
+        let baselines = self.full_build_baselines.take();
+        if baselines.is_none() && before.is_none() {
+            return Ok(Vec::new());
+        }
+        let after = capture_snapshot(&self.resolved_config)?;
+        let hook_changes = match (baselines, before) {
+            (Some((sources, assets)), _) => {
+                let assets_directory = &self.resolved_config.assets_directory;
+                let mut changes: Vec<SourceChange> = diff_snapshots(&sources, &after)
+                    .into_iter()
+                    .filter(|change| !is_under(&change.path, assets_directory))
+                    .collect();
+                changes.extend(
+                    diff_snapshots(&assets, &after)
+                        .into_iter()
+                        .filter(|change| is_under(&change.path, assets_directory)),
+                );
+                changes
+            }
+            (None, Some(before)) => diff_snapshots(before, &after),
+            (None, None) => Vec::new(),
+        };
+        if hook_changes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let config_path = self.root.join("balzac.toml");
+        let config_changed = hook_changes.iter().any(|change| change.path == config_path);
+        self.hooks_paused = true;
+        let result = match classify_changes(&self.resolved_config, &hook_changes) {
+            // recreating the output directory would discard what hooks such as
+            // build_after wrote into it, so refresh it in place instead, unless
+            // the config changed and any source directory may have moved
+            ChangePlan::FullReload if !config_changed => self
+                .refresh_output(&hook_changes)
+                .map(|()| vec![ReloadMessage::full()]),
+            plan => self.apply_change_plan(plan),
+        };
+        self.hooks_paused = false;
+        result
+    }
+
+    /// Rebuilds the whole site over the existing output directory, with an
+    /// unchanged config. Only the changed assets are copied, as `add_assets`
+    /// refuses to overwrite files already in the output directory.
+    fn refresh_output(&mut self, changes: &[SourceChange]) -> Result<()> {
+        // deletions first, children before their directory, so the render
+        // below is never undone by them
+        for change in changes.iter().rev() {
+            if change.change_type == ChangeType::Deleted {
+                remove_output_for_source(&self.resolved_config, &change.path)?;
+                self.sync_asset(change)?;
+            }
+        }
+        self.render_site()?;
+        write_robots(&self.resolved_config)?;
+        markdown::write_highlight_css(&self.resolved_config)?;
+        for change in changes {
+            if change.change_type != ChangeType::Deleted {
+                self.sync_asset(change)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirrors one changed path of the assets directory into the output.
+    /// It never replaces a rendered page: `render_site` runs first and, like
+    /// a full build, rejects pages whose output collides with an asset, and
+    /// directories are only removed once empty, as pages may live in them
+    /// (e.g. a directory-style `pages/assets.hbs`).
+    fn sync_asset(&self, change: &SourceChange) -> std::io::Result<()> {
+        let config = &self.resolved_config;
+        let Ok(relative_path) = change.path.strip_prefix(&config.assets_directory) else {
+            return Ok(());
+        };
+        // the output directory may live inside the assets directory
+        if is_under(&change.path, &config.output_directory) {
+            return Ok(());
+        }
+        let target = config.output_directory.join("assets").join(relative_path);
+        let source_is_dir = change.path.is_dir();
+        if change.change_type != ChangeType::Deleted && !source_is_dir && !change.path.is_file() {
+            return Ok(()); // like add_assets, skip what isn't a regular file
+        }
+        // clear what was deleted, or replaced by an entry of another type
+        if let Ok(existing) = fs::symlink_metadata(&target)
+            && (change.change_type == ChangeType::Deleted || existing.is_dir() != source_is_dir)
+        {
+            if !existing.is_dir() {
+                fs::remove_file(&target)?;
+            } else if fs::read_dir(&target)?.next().is_none() {
+                fs::remove_dir(&target)?;
+            } else if change.change_type != ChangeType::Deleted {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "asset {} would replace the non-empty directory {}",
+                        change.path.display(),
+                        target.display()
+                    ),
+                ));
+            }
+        }
+        match change.change_type {
+            ChangeType::Deleted => Ok(()),
+            _ if source_is_dir => fs::create_dir_all(target),
+            _ => {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&change.path, target).map(|_| ())
+            }
+        }
     }
 
     /// Keeps the error of a failed build, or clears it after a successful one.
@@ -186,12 +343,14 @@ impl DevSession {
                     return Ok(vec![ReloadMessage::full()]);
                 }
 
+                self.run_hook(HookPhase::RenderBefore)?;
                 let mut messages = Vec::new();
                 for target in targets {
                     if let Some(message) = self.handle_static_page_change(&target)? {
                         messages.push(message);
                     }
                 }
+                self.run_hook(HookPhase::RenderAfter)?;
                 if !messages.is_empty() {
                     self.refresh_sitemap()?;
                 }
@@ -230,31 +389,48 @@ impl DevSession {
 
     fn full_rebuild(&mut self) -> Result<()> {
         let (parsed_config, resolved_config) = load_config(&self.root)?;
-        Self::log_ignored_hooks(&parsed_config);
         self.resolved_config = resolved_config;
+        self.hooks = dev_hooks(parsed_config);
         self.build_current_config()
     }
 
+    /// Builds the whole site, running every hook phase in the same order as
+    /// `balzac build`.
     fn build_current_config(&mut self) -> Result<()> {
+        self.run_hook(HookPhase::RenderInitBefore)?;
+        let sources_baseline = self.hook_snapshot()?;
+        let renderer = self.create_renderer()?;
+        self.run_hook(HookPhase::RenderInitAfter)?;
+        self.run_hook(HookPhase::BuildBefore)?;
         make_dist_folder(&self.resolved_config)?;
         self.listing_outputs.clear();
-        self.render_site()?;
+        self.render_site_with(&renderer)?;
         write_robots(&self.resolved_config)?;
         markdown::write_highlight_css(&self.resolved_config)?;
         add_assets(&self.resolved_config)?;
-        Ok(())
+        if let Some(sources) = sources_baseline {
+            let assets = capture_snapshot(&self.resolved_config)?;
+            self.full_build_baselines = Some((sources, assets));
+        }
+        self.run_hook(HookPhase::BuildAfter)
     }
 
     fn render_site(&mut self) -> Result<()> {
         let renderer = self.create_renderer()?;
+        self.render_site_with(&renderer)
+    }
+
+    fn render_site_with(&mut self, renderer: &HandlebarsRenderer<'_>) -> Result<()> {
         let site_pages = discover_site_pages(&self.resolved_config)?;
 
-        render_pages(&self.resolved_config, site_pages.all(), &renderer)?;
-        render_collection_items(&self.resolved_config, site_pages.all(), &renderer)?;
-        render_listing_pages(&self.resolved_config, site_pages.all(), &renderer)?;
+        self.run_hook(HookPhase::RenderBefore)?;
+        render_pages(&self.resolved_config, site_pages.all(), renderer)?;
+        render_collection_items(&self.resolved_config, site_pages.all(), renderer)?;
+        render_listing_pages(&self.resolved_config, site_pages.all(), renderer)?;
+        self.run_hook(HookPhase::RenderAfter)?;
         self.prune_stale_listings(&site_pages)?;
         write_sitemap(&self.resolved_config, &site_pages)?;
-        self.refresh_feeds(&site_pages, &renderer)
+        self.refresh_feeds(&site_pages, renderer)
     }
 
     /// Writes feeds and removes those from the previous render that are no
@@ -322,10 +498,44 @@ impl DevSession {
         Ok(renderer)
     }
 
-    fn log_ignored_hooks(parsed_config: &Config) {
-        if parsed_config.hooks.is_some() {
-            log::info!("Hooks are configured but ignored in dev mode");
+    /// Runs a hook; a failure aborts the current (re)build like any other
+    /// build error. Hooks that fail after output was written (e.g. after
+    /// `make_dist_folder` in a full rebuild, or `render_after`) leave it
+    /// changed or partially rebuilt.
+    fn run_hook(&self, phase: HookPhase) -> Result<()> {
+        if self.hooks_paused {
+            return Ok(());
         }
+        HookExecutor::new(self.hooks.as_ref(), &self.root).run(phase)?;
+        Ok(())
+    }
+}
+
+/// Combines the reload messages of a rebuild and of its hook writes; a full
+/// reload covers every targeted one.
+fn merge_reload_messages(
+    mut messages: Vec<ReloadMessage>,
+    hook_messages: Vec<ReloadMessage>,
+) -> Vec<ReloadMessage> {
+    if messages.contains(&ReloadMessage::full()) || hook_messages.contains(&ReloadMessage::full()) {
+        return vec![ReloadMessage::full()];
+    }
+    for message in hook_messages {
+        if !messages.contains(&message) {
+            messages.push(message);
+        }
+    }
+    messages
+}
+
+/// Keeps the configured hooks only when they are enabled for dev mode.
+fn dev_hooks(parsed_config: Config) -> Option<Hooks> {
+    let hooks = parsed_config.hooks?;
+    if hooks.dev {
+        Some(hooks)
+    } else {
+        log::info!("Hooks are configured but ignored in dev mode (set `dev = true` in [hooks])");
+        None
     }
 }
 
@@ -2764,5 +2974,525 @@ combined = true
 
         assert!(!root.join("dist/posts/atom.xml").exists());
         assert!(!root.join("dist/atom.xml").exists());
+    }
+
+    /// Writes a project whose hooks append their phase name to `hooks.log`.
+    fn setup_hooks_project(dev: bool, extra_hooks: &str) -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        let mut hooks = String::new();
+        for phase in [
+            "render_init_before",
+            "render_init_after",
+            "build_before",
+            "render_before",
+            "render_after",
+            "build_after",
+        ] {
+            if !extra_hooks.contains(&format!("{phase} =")) {
+                writeln!(hooks, "{phase} = \"sh -c 'echo {phase} >> hooks.log'\"").unwrap();
+            }
+        }
+        fs::write(
+            root.join("balzac.toml"),
+            format!(
+                r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+assets_directory = "./assets"
+
+[hooks]
+dev = {dev}
+{hooks}{extra_hooks}
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
+        fs::write(root.join("pages/about.hbs"), "<h1>About</h1>").unwrap();
+        temp_dir
+    }
+
+    fn take_hooks_log(root: &Path) -> Vec<String> {
+        let log_path = root.join("hooks.log");
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        let _ = fs::remove_file(log_path);
+        log.lines().map(str::to_string).collect()
+    }
+
+    fn page_change(root: &Path, page: &str) -> SourceChange {
+        SourceChange {
+            path: root.join("pages").join(page),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn test_dev_hooks_are_skipped_unless_enabled() {
+        let temp_dir = setup_hooks_project(false, "");
+        let root = temp_dir.path();
+
+        let mut session = DevSession::new(root).unwrap();
+        session.full_rebuild().unwrap();
+
+        assert_eq!(take_hooks_log(root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_dev_full_build_runs_all_hooks_in_build_order() {
+        let temp_dir = setup_hooks_project(true, "");
+        let root = temp_dir.path();
+        let all_phases = [
+            "render_init_before",
+            "render_init_after",
+            "build_before",
+            "render_before",
+            "render_after",
+            "build_after",
+        ];
+
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(take_hooks_log(root), all_phases);
+
+        fs::write(root.join("assets/site.css"), "body {}").unwrap();
+        let messages = session
+            .process_changes(&[SourceChange {
+                path: root.join("assets/site.css"),
+                change_type: ChangeType::Created,
+                is_dir: false,
+            }])
+            .unwrap();
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(take_hooks_log(root), all_phases);
+    }
+
+    #[test]
+    fn test_dev_targeted_rebuild_runs_only_render_hooks() {
+        let temp_dir = setup_hooks_project(true, "");
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        take_hooks_log(root);
+
+        fs::write(root.join("pages/about.hbs"), "<h1>About v2</h1>").unwrap();
+        let messages = session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::targeted("/about")]);
+        assert_eq!(take_hooks_log(root), ["render_before", "render_after"]);
+    }
+
+    #[test]
+    fn test_dev_failing_hook_aborts_rebuild_and_keeps_previous_output() {
+        // fails only while a `fail` marker exists, so the initial build succeeds
+        let temp_dir = setup_hooks_project(true, "render_before = \"test ! -e fail\"");
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::write(root.join("fail"), "").unwrap();
+        fs::write(root.join("pages/about.hbs"), "<h1>About v2</h1>").unwrap();
+        let error = session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap_err();
+        assert!(error.to_string().contains("render_before hook failed"));
+        assert_eq!(
+            fs::read_to_string(root.join("dist/about.html")).unwrap(),
+            "<h1>About</h1>"
+        );
+
+        fs::remove_file(root.join("fail")).unwrap();
+        session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/about.html")).unwrap(),
+            "<h1>About v2</h1>"
+        );
+    }
+
+    #[test]
+    fn test_dev_targeted_rebuild_copies_assets_written_by_render_hook() {
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_before = \"sh -c 'echo render_before >> hooks.log; echo built >> assets/generated.css'\"",
+        );
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        take_hooks_log(root);
+
+        fs::write(root.join("pages/about.hbs"), "<h1>About v2</h1>").unwrap();
+        let messages = session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/generated.css")).unwrap(),
+            "built\nbuilt\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/about.html")).unwrap(),
+            "<h1>About v2</h1>"
+        );
+        // the hook writes are applied with hooks paused, so hooks ran only once
+        assert_eq!(take_hooks_log(root), ["render_before", "render_after"]);
+    }
+
+    #[test]
+    fn test_dev_hook_writes_keep_output_written_by_build_after() {
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_init_before = \"sh -c 'echo built >> assets/generated.css'\"\n\
+             build_after = \"sh -c 'echo extra > dist/extra.txt'\"",
+        );
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(root.join("dist/extra.txt").is_file());
+
+        fs::write(root.join("assets/site.css"), "body {}").unwrap();
+        session
+            .process_changes(&[SourceChange {
+                path: root.join("assets/site.css"),
+                change_type: ChangeType::Created,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert!(root.join("dist/extra.txt").is_file());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/generated.css")).unwrap(),
+            "built\nbuilt\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_full_build_does_not_reapply_assets_it_already_copied() {
+        // a redundant re-render after build_after would drop its edit
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_init_before = \"sh -c 'echo built >> assets/generated.css'\"\n\
+             build_after = \"sh -c 'echo post >> dist/index.html'\"",
+        );
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "<h1>Home</h1>post\n"
+        );
+
+        fs::write(root.join("assets/site.css"), "body {}").unwrap();
+        session
+            .process_changes(&[SourceChange {
+                path: root.join("assets/site.css"),
+                change_type: ChangeType::Created,
+                is_dir: false,
+            }])
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/index.html")).unwrap(),
+            "<h1>Home</h1>post\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_full_build_applies_pages_written_after_they_were_read() {
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_after = \"sh -c 'echo generated > pages/generated.hbs'\"",
+        );
+        let root = temp_dir.path();
+        DevSession::new(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("dist/generated.html")).unwrap(),
+            "generated\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_hook_writes_mirror_deleted_and_updated_assets() {
+        // the hook only rewrites assets once `flip` exists
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_before = \"sh -c 'test ! -e flip || { rm assets/old.css; echo v2 > assets/kept.css; }'\"",
+        );
+        let root = temp_dir.path();
+        fs::write(root.join("assets/old.css"), "old").unwrap();
+        fs::write(root.join("assets/kept.css"), "v1").unwrap();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(root.join("dist/assets/old.css").is_file());
+
+        fs::write(root.join("flip"), "").unwrap();
+        session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+
+        assert!(!root.join("dist/assets/old.css").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/kept.css")).unwrap(),
+            "v2\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_enabling_hooks_mid_session_applies_their_writes() {
+        let temp_dir = setup_hooks_project(false, "");
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+
+        let config = fs::read_to_string(root.join("balzac.toml"))
+            .unwrap()
+            .replace("dev = false", "dev = true")
+            .replace(
+                "render_after = \"sh -c 'echo render_after >> hooks.log'\"",
+                "render_after = \"sh -c 'echo generated > pages/generated.hbs'\"",
+            );
+        fs::write(root.join("balzac.toml"), config).unwrap();
+        session
+            .process_changes(&[SourceChange {
+                path: root.join("balzac.toml"),
+                change_type: ChangeType::Modified,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert!(root.join("dist/generated.html").is_file());
+    }
+
+    #[test]
+    fn test_dev_hook_writes_remove_outputs_of_deleted_pages() {
+        // once `flip` exists, the hook deletes a page and touches an asset
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_after = \"sh -c 'test ! -e flip || { rm -f pages/about.hbs; echo v2 > assets/site.css; }'\"",
+        );
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(root.join("dist/about.html").is_file());
+
+        fs::write(root.join("flip"), "").unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>Home v2</h1>").unwrap();
+        session
+            .process_changes(&[page_change(root, "index.hbs")])
+            .unwrap();
+
+        assert!(!root.join("dist/about.html").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/site.css")).unwrap(),
+            "v2\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_hook_writes_replace_asset_file_with_directory_and_back() {
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_before = \"sh -c 'test ! -e flip || { rm -rf assets/bundle; mkdir assets/bundle; echo js > assets/bundle/app.js; }'\"\n\
+             render_after = \"sh -c 'test ! -e flop || { rm -rf assets/bundle; echo file > assets/bundle; }'\"",
+        );
+        let root = temp_dir.path();
+        fs::write(root.join("assets/bundle"), "file").unwrap();
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::write(root.join("flip"), "").unwrap();
+        session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/bundle/app.js")).unwrap(),
+            "js\n"
+        );
+
+        fs::remove_file(root.join("flip")).unwrap();
+        fs::write(root.join("flop"), "").unwrap();
+        session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/bundle")).unwrap(),
+            "file\n"
+        );
+    }
+
+    #[test]
+    fn test_dev_hook_changing_config_rebuilds_from_new_directories() {
+        // once `flip` exists, the hook points the config at another assets dir
+        let temp_dir = setup_hooks_project(true, "render_before = \"sh switch.sh\"");
+        let root = temp_dir.path();
+        fs::write(
+            root.join("switch.sh"),
+            "test ! -e flip || printf 'output_directory = \"./dist\"\\n\
+             pages_directory = \"./pages\"\\nassets_directory = \"./static\"\\n' > balzac.toml\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("static")).unwrap();
+        fs::write(root.join("static/new.css"), "new").unwrap();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(!root.join("dist/assets/new.css").exists());
+
+        fs::write(root.join("flip"), "").unwrap();
+        session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/new.css")).unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn test_dev_hook_written_asset_never_replaces_a_rendered_page() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+assets_directory = "./assets"
+url_style = "directory"
+
+[hooks]
+dev = true
+render_after = "sh -c 'test ! -e flip || echo asset > assets/index.html'"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
+        fs::write(root.join("pages/assets.hbs"), "<h1>Assets page</h1>").unwrap();
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::write(root.join("flip"), "").unwrap();
+        let error = session
+            .process_changes(&[page_change(root, "index.hbs")])
+            .unwrap_err();
+
+        assert!(error.to_string().contains("would overwrite"), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/index.html")).unwrap(),
+            "<h1>Assets page</h1>"
+        );
+    }
+
+    #[test]
+    fn test_dev_hook_deleting_assets_keeps_pages_rendered_there() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("assets/css")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+assets_directory = "./assets"
+url_style = "directory"
+
+[hooks]
+dev = true
+render_after = "sh -c 'test ! -e flip || rm -rf assets'"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
+        fs::write(root.join("pages/assets.hbs"), "<h1>Assets page</h1>").unwrap();
+        fs::write(root.join("assets/css/site.css"), "body {}").unwrap();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(root.join("dist/assets/css/site.css").is_file());
+
+        fs::write(root.join("flip"), "").unwrap();
+        session
+            .process_changes(&[page_change(root, "index.hbs")])
+            .unwrap();
+
+        assert!(!root.join("dist/assets/css").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/index.html")).unwrap(),
+            "<h1>Assets page</h1>"
+        );
+    }
+
+    #[test]
+    fn test_merge_reload_messages() {
+        assert_eq!(
+            merge_reload_messages(
+                vec![ReloadMessage::targeted("/about")],
+                vec![ReloadMessage::full()]
+            ),
+            vec![ReloadMessage::full()]
+        );
+        assert_eq!(
+            merge_reload_messages(
+                vec![ReloadMessage::targeted("/about")],
+                vec![
+                    ReloadMessage::targeted("/about"),
+                    ReloadMessage::targeted("/")
+                ]
+            ),
+            vec![
+                ReloadMessage::targeted("/about"),
+                ReloadMessage::targeted("/")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dev_failing_hook_in_initial_build_is_reported_not_fatal() {
+        let temp_dir = setup_hooks_project(true, "build_before = \"test -e ready\"");
+        let root = temp_dir.path();
+
+        let mut session = DevSession::new(root).unwrap();
+        let error = session.build_error.clone().unwrap();
+        assert!(error.contains("build_before hook failed"), "{error}");
+
+        // the next change rebuilds the whole site, hooks included
+        fs::write(root.join("ready"), "").unwrap();
+        let messages = session
+            .process_changes(&[page_change(root, "about.hbs")])
+            .unwrap();
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert!(session.build_error.is_none());
+        assert!(root.join("dist/index.html").is_file());
+    }
+
+    #[test]
+    fn test_dev_hook_writing_into_watched_directory_does_not_retrigger() {
+        let temp_dir = setup_hooks_project(
+            true,
+            "render_init_before = \"sh -c 'echo built >> assets/generated.css'\"",
+        );
+        let root = temp_dir.path();
+        let mut session = DevSession::new(root).unwrap();
+        let snapshot = capture_snapshot(&session.resolved_config).unwrap();
+
+        fs::write(root.join("assets/site.css"), "body {}").unwrap();
+        let before_rebuild = capture_snapshot(&session.resolved_config).unwrap();
+        session
+            .process_changes(&diff_snapshots(&snapshot, &before_rebuild))
+            .unwrap();
+        // the watch loop re-snapshots after each rebuild, as done here
+        let snapshot = capture_snapshot(&session.resolved_config).unwrap();
+        assert!(
+            diff_snapshots(&before_rebuild, &snapshot)
+                .iter()
+                .any(|change| change.path == root.join("assets/generated.css")),
+            "the hook should have written into the watched assets directory"
+        );
+
+        let changes = diff_snapshots(
+            &snapshot,
+            &capture_snapshot(&session.resolved_config).unwrap(),
+        );
+        assert!(changes.is_empty(), "hook output retriggered: {changes:?}");
+        assert_eq!(
+            fs::read_to_string(root.join("dist/assets/generated.css")).unwrap(),
+            "built\nbuilt\n"
+        );
     }
 }

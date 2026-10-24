@@ -1,5 +1,6 @@
 use crate::config::Hooks;
 use shell_words::split;
+use std::fmt;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -57,61 +58,100 @@ impl<'a> HookExecutor<'a> {
         }
     }
 
-    /// Executes a hook at the specified phase
+    /// Executes a hook at the specified phase, exiting the process on failure
     ///
-    /// Returns Ok(()) if:
-    /// - The hook is not configured (silent success)
-    /// - The hook executes successfully
-    ///
-    /// Exits the process with code 1 if:
-    /// - The hook command is invalid or empty
-    /// - The hook process fails to start
-    /// - The hook process exits with non-zero status
+    /// Used by `balzac build`, where a failing hook aborts the whole build.
     pub fn execute(&self, phase: HookPhase) {
+        if let Err(error) = self.run(phase) {
+            log::error!("{error}");
+            std::process::exit(1);
+        }
+    }
+
+    /// Runs a hook at the specified phase
+    ///
+    /// Returns Ok(()) if the hook is not configured or succeeds, and an error
+    /// if its command is invalid or empty, fails to start, or exits with a
+    /// non-zero status.
+    pub fn run(&self, phase: HookPhase) -> Result<(), HookError> {
         let Some(hook_command) = self.get_hook_command(phase) else {
-            return; // Hook not configured, silent success
+            return Ok(()); // Hook not configured, silent success
         };
 
-        let hook_name = phase.name();
-        log::info!("Found {hook_name} hook, running");
+        let hook = phase.name();
+        log::info!("Found {hook} hook, running");
         let start = Instant::now();
 
-        // Parse command
-        let parts = split(hook_command).unwrap_or_else(|e| {
-            log::error!("Invalid {hook_name} hook command {hook_command:?}: {e}");
-            std::process::exit(1);
-        });
-        if parts.is_empty() {
-            log::error!("{hook_name} hook is empty");
-            std::process::exit(1);
+        let parts = split(hook_command).map_err(|error| HookError::InvalidCommand {
+            hook,
+            command: hook_command.clone(),
+            message: error.to_string(),
+        })?;
+        let Some((program, args)) = parts.split_first() else {
+            return Err(HookError::Empty { hook });
+        };
+
+        let status = Command::new(program)
+            .args(args)
+            .current_dir(self.base_path)
+            .status()
+            .map_err(|source| HookError::Spawn { hook, source })?;
+        if !status.success() {
+            return Err(HookError::Failed {
+                hook,
+                code: status.code(),
+            });
         }
 
-        // Build command
-        let mut cmd = Command::new(&parts[0]);
-        for arg in &parts[1..] {
-            cmd.arg(arg);
-        }
-        cmd.current_dir(self.base_path);
+        log::info!("{} hook completed (took {:?})", hook, start.elapsed());
+        Ok(())
+    }
+}
 
-        // Execute and check status
-        match cmd.status() {
-            Ok(status) => {
-                if !status.success() {
-                    log::error!(
-                        "{} hook failed with exit code: {:?}",
-                        hook_name,
-                        status.code()
-                    );
-                    std::process::exit(1);
-                }
+/// Why a hook could not run successfully
+#[derive(Debug)]
+pub enum HookError {
+    InvalidCommand {
+        hook: &'static str,
+        command: String,
+        message: String,
+    },
+    Empty {
+        hook: &'static str,
+    },
+    Spawn {
+        hook: &'static str,
+        source: std::io::Error,
+    },
+    Failed {
+        hook: &'static str,
+        code: Option<i32>,
+    },
+}
+
+impl fmt::Display for HookError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HookError::InvalidCommand {
+                hook,
+                command,
+                message,
+            } => write!(f, "Invalid {hook} hook command {command:?}: {message}"),
+            HookError::Empty { hook } => write!(f, "{hook} hook is empty"),
+            HookError::Spawn { hook, source } => write!(f, "Error running {hook} hook: {source}"),
+            HookError::Failed { hook, code } => {
+                write!(f, "{hook} hook failed with exit code: {code:?}")
             }
-            Err(e) => {
-                log::error!("Error running {hook_name} hook: {e}");
-                std::process::exit(1);
-            }
         }
+    }
+}
 
-        log::info!("{} hook completed (took {:?})", hook_name, start.elapsed());
+impl std::error::Error for HookError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HookError::Spawn { source, .. } => Some(source),
+            _ => None,
+        }
     }
 }
 
@@ -154,6 +194,7 @@ mod tests {
             render_init_after: None,
             render_before: None,
             render_after: None,
+            ..Hooks::default()
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -174,6 +215,7 @@ mod tests {
             render_init_after: Some("echo render init after".to_string()),
             render_before: Some("echo render before".to_string()),
             render_after: Some("echo render after".to_string()),
+            ..Hooks::default()
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -213,6 +255,7 @@ mod tests {
             render_init_after: None,
             render_before: None,
             render_after: None,
+            ..Hooks::default()
         };
         let base_path = PathBuf::from("/tmp");
         let executor = HookExecutor::new(Some(&hooks), &base_path);
@@ -224,5 +267,49 @@ mod tests {
         executor.execute(HookPhase::RenderInitAfter);
         executor.execute(HookPhase::RenderBefore);
         executor.execute(HookPhase::RenderAfter);
+    }
+
+    #[test]
+    fn test_run_reports_failing_hook_instead_of_exiting() {
+        let hooks = Hooks {
+            build_before: Some("false".to_string()),
+            ..Hooks::default()
+        };
+        let base_path = PathBuf::from("/tmp");
+        let executor = HookExecutor::new(Some(&hooks), &base_path);
+
+        let error = executor.run(HookPhase::BuildBefore).unwrap_err();
+        assert!(matches!(
+            error,
+            HookError::Failed {
+                hook: "build_before",
+                code: Some(1)
+            }
+        ));
+    }
+
+    #[test]
+    fn test_run_reports_invalid_and_missing_commands() {
+        let hooks = Hooks {
+            build_before: Some("echo 'unterminated".to_string()),
+            build_after: Some(String::new()),
+            render_before: Some("balzac-definitely-not-a-command".to_string()),
+            ..Hooks::default()
+        };
+        let base_path = PathBuf::from("/tmp");
+        let executor = HookExecutor::new(Some(&hooks), &base_path);
+
+        assert!(matches!(
+            executor.run(HookPhase::BuildBefore),
+            Err(HookError::InvalidCommand { .. })
+        ));
+        assert!(matches!(
+            executor.run(HookPhase::BuildAfter),
+            Err(HookError::Empty { .. })
+        ));
+        assert!(matches!(
+            executor.run(HookPhase::RenderBefore),
+            Err(HookError::Spawn { .. })
+        ));
     }
 }
