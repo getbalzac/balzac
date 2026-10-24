@@ -7,6 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SitemapConfig {
     #[serde(default = "default_sitemap_enabled")]
     pub enabled: bool,
@@ -45,6 +46,7 @@ fn is_default_sitemap_filename(s: &String) -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RobotsConfig {
     #[serde(default = "default_robots_enabled")]
     pub enabled: bool,
@@ -63,6 +65,7 @@ impl Default for RobotsConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // independent on/off switches mirroring balzac.toml keys
+#[serde(deny_unknown_fields)]
 pub struct MarkdownConfig {
     /// Highlight fenced code blocks with CSS classes (`hl-*`)
     #[serde(default = "default_true")]
@@ -103,6 +106,7 @@ pub enum FeedFormat {
 
 /// Per-collection overrides for feed metadata
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeedOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -111,6 +115,7 @@ pub struct FeedOverride {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeedConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -182,12 +187,50 @@ fn default_true() -> bool {
 }
 
 /// `combined = true`, `combined = ["blog", "notes"]` or a `[feed.combined]` table
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum CombinedFeedSetting {
     Enabled(bool),
     Collections(Vec<String>),
     Detailed(CombinedFeedConfig),
+}
+
+// Dispatches on the value type instead of `#[serde(untagged)]`, which would
+// replace a typo in `[feed.combined]` with "did not match any variant".
+impl<'de> Deserialize<'de> for CombinedFeedSetting {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SettingVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SettingVisitor {
+            type Value = CombinedFeedSetting;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a boolean, a list of collections or a table")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(CombinedFeedSetting::Enabled(value))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+                    .map(CombinedFeedSetting::Collections)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(CombinedFeedSetting::Detailed)
+            }
+        }
+
+        deserializer.deserialize_any(SettingVisitor)
+    }
 }
 
 impl CombinedFeedSetting {
@@ -227,6 +270,7 @@ fn default_feed_limit() -> usize {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Hooks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_before: Option<String>,
@@ -243,6 +287,7 @@ pub struct Hooks {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ViteBundler {
     #[serde(default)]
     pub enabled: bool,
@@ -256,6 +301,7 @@ pub struct ViteBundler {
 }
 
 #[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Bundler {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vite: Option<ViteBundler>,
@@ -264,6 +310,7 @@ pub struct Bundler {
 /// Paginated listing of a collection, configured under `[listings.<collection>]`.
 /// Rendered with `<pages_directory>/<collection>/list.hbs`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListingConfig {
     /// Items per page; all items go on a single page when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -275,6 +322,7 @@ pub struct ListingConfig {
 /// `<pages_directory>/<name>/term.hbs`, the optional index of all terms with
 /// `<pages_directory>/<name>/taxonomy.hbs`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaxonomyConfig {
     /// Items per term page; all items go on a single page when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,7 +332,12 @@ pub struct TaxonomyConfig {
     pub collections: Option<Vec<String>>,
 }
 
+/// Every config struct denies unknown keys so that typos fail loudly; only
+/// `global` (and map keys such as collection names) is free-form. New config
+/// structs need `#[serde(deny_unknown_fields)]` too (serde does not support it
+/// together with `#[serde(flatten)]`).
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(
         default = "default_output_directory",
@@ -374,7 +427,7 @@ impl Config {
     pub fn load(root: &Path) -> crate::error::Result<Self> {
         let path = root.join("balzac.toml");
         let content = crate::error::read_to_string(&path)?;
-        toml::from_str(&content).map_err(|e| crate::error::Error::Config {
+        Self::from_toml(&content).map_err(|e| crate::error::Error::Config {
             path,
             message: e.to_string(),
         })
@@ -551,6 +604,71 @@ impl Config {
         fs::write(&config_path, config_content)?;
 
         Ok(())
+    }
+}
+
+/// A `balzac.toml` that could not be parsed. Displays the TOML error with the
+/// offending line, followed by a "did you mean" hint for misspelled keys.
+#[derive(Debug)]
+pub struct ConfigError {
+    inner: Box<toml::de::Error>,
+    suggestion: Option<String>,
+}
+
+impl ConfigError {
+    /// Closest known key to the unknown key, if there is a plausible one.
+    #[must_use]
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
+    }
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner.to_string().trim_end())?;
+        if let Some(suggestion) = &self.suggestion {
+            write!(f, "\nhelp: did you mean `{suggestion}`?")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.inner.as_ref())
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(inner: toml::de::Error) -> Self {
+        let suggestion = unknown_field(inner.message()).and_then(|(field, expected)| {
+            expected
+                .into_iter()
+                .map(|candidate| (strsim::jaro_winkler(field, candidate), candidate))
+                .filter(|(score, _)| *score > 0.8)
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, candidate)| candidate.to_string())
+        });
+        Self {
+            inner: Box::new(inner),
+            suggestion,
+        }
+    }
+}
+
+/// Splits serde's `unknown field` message into the unknown key and the keys
+/// allowed at that position.
+fn unknown_field(message: &str) -> Option<(&str, Vec<&str>)> {
+    let rest = message.strip_prefix("unknown field `")?;
+    let (field, expected) = rest.split_once('`')?;
+    let expected = expected.split('`').skip(1).step_by(2).collect();
+    Some((field, expected))
+}
+
+impl Config {
+    /// Parses the contents of a `balzac.toml`, rejecting unknown keys.
+    pub fn from_toml(content: &str) -> Result<Self, ConfigError> {
+        Ok(toml::from_str(content)?)
     }
 }
 
@@ -941,5 +1059,254 @@ mod tests {
         assert!(markdown.footnotes);
         assert!(!markdown.syntax_highlighting);
         assert!(!markdown.heading_ids);
+    }
+
+    fn parse_error(content: &str) -> ConfigError {
+        match Config::from_toml(content) {
+            Ok(_) => panic!("expected {content:?} to be rejected"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn test_unknown_top_level_key_is_rejected() {
+        let error = parse_error("ouput_directory = \"./build\"\n");
+        assert_eq!(error.suggestion(), Some("output_directory"));
+
+        let message = error.to_string();
+        assert!(message.contains("line 1"), "{message}");
+        assert!(
+            message.contains("unknown field `ouput_directory`"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("help: did you mean `output_directory`?"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_table_is_rejected() {
+        let error = parse_error("base_url = \"https://example.com\"\n\n[sitemp]\nenabled = true\n");
+        assert_eq!(error.suggestion(), Some("sitemap"));
+        assert!(error.to_string().contains("3 | [sitemp]"), "{error}");
+    }
+
+    #[test]
+    fn test_unknown_nested_keys_are_rejected() {
+        for (content, suggestion) in [
+            ("[hooks]\nbuild_befor = \"true\"\n", Some("build_before")),
+            ("[bundler]\nvit = {}\n", Some("vite")),
+            ("[bundler.vite]\nenable = true\n", Some("enabled")),
+            ("[sitemap]\nfile_name = \"map.xml\"\n", Some("filename")),
+            ("[robots]\ndisalow = []\n", Some("disallow")),
+            ("[markdown]\nfootnote = true\n", Some("footnotes")),
+            ("[listings.posts]\nper_pag = 3\n", Some("per_page")),
+            ("[taxonomies.tags]\ncollection = []\n", Some("collections")),
+            ("[feed]\nlimt = 3\n", Some("limit")),
+            ("[feed.overrides.blog]\ntitel = \"Blog\"\n", Some("title")),
+            ("[feed.combined]\ncolections = []\n", Some("collections")),
+            ("[hooks]\nzzz = \"true\"\n", None),
+        ] {
+            let error = parse_error(content);
+            assert_eq!(error.suggestion(), suggestion, "{content:?}: {error}");
+            assert!(error.to_string().contains("line 2"), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_load_rejects_unknown_keys_with_a_suggestion() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("balzac.toml"), "[sitemp]\n").unwrap();
+        let error = Config::load(dir.path()).err().unwrap();
+        let crate::error::Error::Config { path, message } = &error else {
+            panic!("expected a config error, got {error}");
+        };
+        assert_eq!(path, &dir.path().join("balzac.toml"));
+        assert!(message.contains("1 | [sitemp]"), "{message}");
+        assert!(
+            message.ends_with("help: did you mean `sitemap`?"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_global_stays_free_form() {
+        let config =
+            Config::from_toml("[global]\nsite_name = \"Site\"\n[global.anything]\ngoes = [1, 2]\n")
+                .unwrap();
+        let global = config.global.unwrap();
+        assert_eq!(global["anything"], serde_json::json!({ "goes": [1, 2] }));
+    }
+
+    const PROBE: &str = "__balzac_probe__";
+
+    /// Configs putting an unknown probe key in the table at dotted `path`
+    /// (`*` stands for any map key), as a table and as an array of tables.
+    fn probe_documents(path: &str) -> Vec<String> {
+        let header = path.replace('*', "any");
+        if path.is_empty() {
+            vec![format!("{PROBE} = 0")]
+        } else {
+            vec![
+                format!("[{header}]\n{PROBE} = 0"),
+                format!("[[{header}]]\n{PROBE} = 0"),
+            ]
+        }
+    }
+
+    /// Keys accepted by the table at dotted `path`, found by feeding it an
+    /// unknown key. `None` when the value there is not a strict table.
+    fn probe_table(path: &str) -> Option<Vec<String>> {
+        probe_documents(path).iter().find_map(|content| {
+            let error = Config::from_toml(content).err()?;
+            let (field, expected) = unknown_field(error.inner.message())?;
+            (field == PROBE).then(|| expected.into_iter().map(String::from).collect())
+        })
+    }
+
+    /// Every key path of the config schema, discovered through the
+    /// `deny_unknown_fields` errors, so new nested structs are covered
+    /// automatically. Map keys (collection names, ...) appear as `*`.
+    fn schema_paths(path: &str, paths: &mut std::collections::BTreeSet<String>) {
+        let Some(fields) = probe_table(path) else {
+            return;
+        };
+        for field in fields {
+            let child = if path.is_empty() {
+                field
+            } else {
+                format!("{path}.{field}")
+            };
+            paths.insert(child.clone());
+            if probe_table(&child).is_some() {
+                schema_paths(&child, paths);
+            } else if probe_table(&format!("{child}.*")).is_some() {
+                paths.insert(format!("{child}.*"));
+                schema_paths(&format!("{child}.*"), paths);
+            }
+        }
+    }
+
+    #[test]
+    fn test_only_global_accepts_unknown_keys() {
+        let mut schema = std::collections::BTreeSet::from([String::new()]);
+        schema_paths("", &mut schema);
+        // a lenient struct is a leaf to `schema_paths`, so also probe map values
+        let candidates: std::collections::BTreeSet<String> = schema
+            .iter()
+            .flat_map(|path| {
+                if path.is_empty() {
+                    vec![String::new()]
+                } else {
+                    vec![path.clone(), format!("{path}.*")]
+                }
+            })
+            .collect();
+        let lenient: Vec<_> = candidates
+            .iter()
+            .filter(|path| *path != "global" && !path.starts_with("global."))
+            .filter(|path| {
+                probe_documents(path)
+                    .iter()
+                    .any(|content| Config::from_toml(content).is_ok())
+            })
+            .collect();
+        assert!(
+            lenient.is_empty(),
+            "config tables accepting unknown keys, add #[serde(deny_unknown_fields)]: {lenient:?}"
+        );
+    }
+
+    /// Key paths of a README toml example, with map keys replaced by `*`.
+    /// Free-form values (`global`) are not descended into.
+    fn documented_paths(
+        prefix: &str,
+        table: &toml::Table,
+        schema: &std::collections::BTreeSet<String>,
+        paths: &mut std::collections::BTreeSet<String>,
+    ) {
+        for (key, value) in table {
+            let join = |key: &str| {
+                if prefix.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{prefix}.{key}")
+                }
+            };
+            let path = if schema.contains(&join(key)) {
+                join(key)
+            } else {
+                join("*")
+            };
+            paths.insert(path.clone());
+            let nested = match value {
+                toml::Value::Table(table) => vec![table],
+                toml::Value::Array(items) => {
+                    items.iter().filter_map(toml::Value::as_table).collect()
+                }
+                _ => Vec::new(),
+            };
+            let child_prefix = format!("{path}.");
+            if schema.iter().any(|p| p.starts_with(&child_prefix)) {
+                for table in nested {
+                    documented_paths(&path, table, schema, paths);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_readme_config_reference_matches_config() {
+        let readme = include_str!("../README.md");
+        let mut schema = std::collections::BTreeSet::new();
+        schema_paths("", &mut schema);
+        assert!(schema.contains("bundler.vite.dev_origin"), "{schema:?}");
+        assert!(schema.contains("listings.*.per_page"), "{schema:?}");
+
+        // top-level keys: the bullet list under "## Config Reference"
+        let reference = readme
+            .split("## Config Reference")
+            .nth(1)
+            .expect("README has a Config Reference section");
+        let reference = &reference[..reference.find("\n#").unwrap_or(reference.len())];
+        let listed: std::collections::BTreeSet<String> = reference
+            .lines()
+            .filter_map(|line| line.strip_prefix("- "))
+            .filter_map(|line| line.split([' ', ':']).next())
+            .map(String::from)
+            .collect();
+        let top_level: std::collections::BTreeSet<String> = schema
+            .iter()
+            .filter(|p| !p.contains('.'))
+            .cloned()
+            .collect();
+        assert_eq!(
+            listed, top_level,
+            "README Config Reference is out of sync with Config"
+        );
+
+        // nested keys: the ```toml examples, which must also be valid configs
+        let mut documented = std::collections::BTreeSet::new();
+        for block in readme.split("```toml\n").skip(1) {
+            let block = &block[..block.find("```").expect("closed toml block")];
+            if let Err(e) = Config::from_toml(block) {
+                panic!("README toml example is not a valid config:\n{block}\n{e}");
+            }
+            documented_paths(
+                "",
+                &toml::from_str(block).unwrap(),
+                &schema,
+                &mut documented,
+            );
+        }
+        let undocumented: Vec<_> = schema
+            .iter()
+            .filter(|p| p.contains('.') && !documented.contains(*p))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "config keys missing from the README toml examples: {undocumented:?}"
+        );
     }
 }

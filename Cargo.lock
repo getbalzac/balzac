@@ -87,6 +87,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shell-words",
+ "strsim",
  "syntect",
  "tempfile",
  "thiserror",
