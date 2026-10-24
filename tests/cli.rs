@@ -183,6 +183,167 @@ fn test_build_reports_collection_item_of_failing_partial_in_tag_template() {
     );
 }
 
+/// A blog of `posts` items with a paginated listing and a tag taxonomy,
+/// rendered through a layout, a tag template and (with the `script-helpers`
+/// feature) a Rhai helper. `extra_frontmatter` adds lines to item `i`.
+fn setup_blog_project(posts: usize, extra_frontmatter: impl Fn(usize) -> String) -> TempDir {
+    let project = TempDir::new().unwrap();
+    let root = project.path();
+    for dir in [
+        "pages/posts",
+        "pages/tags",
+        "layouts",
+        "tags",
+        "content/posts",
+    ] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    fs::write(
+        root.join("balzac.toml"),
+        "base_url = \"https://example.com\"\n\n[listings.posts]\nper_page = 7\n\n[taxonomies.tags]\nper_page = 5\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("layouts/base.hbs"),
+        "<html><body>{{> @partial-block}}</body></html>",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tags/a.hbs"),
+        "<a class=\"x\" href=\"{{props.href}}\">{{{content}}}</a>",
+    )
+    .unwrap();
+    let shout = if cfg!(feature = "script-helpers") {
+        fs::create_dir_all(root.join("helpers")).unwrap();
+        fs::write(root.join("helpers/shout.rhai"), "params[0].to_upper()").unwrap();
+        "{{shout fm.title}}"
+    } else {
+        "{{fm.title}}"
+    };
+    fs::write(
+        root.join("pages/posts/details.hbs"),
+        format!(
+            "{{{{#> base}}}}<h1>{shout}</h1>{{{{#if fm.broken}}}}{{{{term_url}}}}{{{{/if}}}}{{{{{{content}}}}}}<p>{{{{len collections.posts}}}}</p>{{{{/base}}}}"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/posts/list.hbs"),
+        "{{#> base}}{{#each pagination.items}}<a href=\"{{url}}\">{{fm.title}}</a>{{/each}}{{/base}}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/tags/term.hbs"),
+        "{{#> base}}{{taxonomy.term.name}}: {{#each pagination.items}}{{url}} {{/each}}{{/base}}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.hbs"),
+        "{{#> base}}{{#each collections.posts}}{{url}} {{/each}}{{/base}}",
+    )
+    .unwrap();
+    for i in 0..posts {
+        fs::write(
+            root.join(format!("content/posts/post-{i:03}.md")),
+            format!(
+                "---\ntitle: Post {i}\ndate: \"2024-01-{:02}\"\ntags: [t{}, u{}]\n{}---\n## Heading {i}\n\n[link](/posts/post-{i:03})\n\n```rust\nfn main() {{}}\n```\n",
+                i % 28 + 1,
+                i % 9,
+                i % 4,
+                extra_frontmatter(i)
+            ),
+        )
+        .unwrap();
+    }
+    project
+}
+
+/// Every file under `dir`, by path relative to it.
+fn read_tree(dir: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let contents = fs::read(&path).unwrap();
+                files.insert(path.strip_prefix(dir).unwrap().to_path_buf(), contents);
+            }
+        }
+    }
+    files
+}
+
+fn build_with_threads(root: &Path, threads: usize) -> (Option<i32>, String) {
+    let output = Command::new(BALZAC)
+        .arg("build")
+        .env("RAYON_NUM_THREADS", threads.to_string())
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output.status.code(), logs)
+}
+
+#[test]
+fn test_parallel_build_matches_single_threaded_build() {
+    let project = setup_blog_project(120, |_| String::new());
+    let root = project.path();
+
+    let (code, logs) = build_with_threads(root, 1);
+    assert_eq!(code, Some(0), "{logs}");
+    let sequential = read_tree(&root.join("dist"));
+
+    let (code, logs) = build_with_threads(root, 8);
+    assert_eq!(code, Some(0), "{logs}");
+    let parallel = read_tree(&root.join("dist"));
+
+    // 120 items, 18 listing pages, 9 + 4 tags of 14 and 30 items
+    assert!(sequential.len() > 120 + 18 + 13, "{:?}", sequential.keys());
+    assert_eq!(
+        sequential.keys().collect::<Vec<_>>(),
+        parallel.keys().collect::<Vec<_>>()
+    );
+    for (path, contents) in &sequential {
+        assert!(&parallel[path] == contents, "{} differs", path.display());
+    }
+    let item = String::from_utf8_lossy(&parallel[Path::new("posts/post-007.html")]).into_owned();
+    let title = if cfg!(feature = "script-helpers") {
+        "POST 7"
+    } else {
+        "Post 7"
+    };
+    assert!(item.contains(&format!("<h1>{title}</h1>")), "{item}");
+    assert!(item.contains("<p>120</p>"), "{item}");
+}
+
+#[test]
+fn test_parallel_build_reports_first_failing_page() {
+    let project = setup_blog_project(200, |i| {
+        if i == 57 || i == 150 {
+            "broken: true\n".to_string()
+        } else {
+            String::new()
+        }
+    });
+
+    for _ in 0..3 {
+        let (code, logs) = build_with_threads(project.path(), 8);
+        assert_eq!(code, Some(1), "{logs}");
+        assert!(
+            logs.contains("(rendering content/posts/post-057.md)"),
+            "{logs}"
+        );
+        assert!(!logs.contains("post-150.md)"), "{logs}");
+    }
+}
+
 /// Kills the dev server when the test ends, even on failure.
 struct DevServer(Child);
 

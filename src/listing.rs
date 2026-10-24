@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::config::{ResolvedConfig, TaxonomyConfig};
 use crate::context::{build_collections_context, compare_collection_items, merge_contexts};
 use crate::error::{self, Result};
+use crate::parallel;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageEntry, PageType, SitemapMeta};
 
@@ -485,33 +486,31 @@ pub fn render_listing_pages(
         .filter_map(|item| Some((item["url"].as_str()?, item)))
         .collect();
     let mut templates: HashMap<&Path, String> = HashMap::new();
+    let mut listings = Vec::new();
 
     for page in pages {
         let PageType::Listing(listing) = &page.page_type else {
             continue;
         };
-        log::info!("Rendering listing {}", page.url_path);
-
         if !templates.contains_key(page.source_path.as_path()) {
             templates.insert(&page.source_path, error::read_to_string(&page.source_path)?);
         }
-        let template = templates[page.source_path.as_path()].clone();
-
-        let mut context = listing.context(&items);
-        context["collections"] = collections.clone();
-        let rendered = render.render(
-            &page.source_path,
-            template,
-            merge_contexts(config, &context),
-        )?;
-
-        if let Some(parent) = page.output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&page.output_path, rendered)?;
+        listings.push((page, listing));
     }
 
-    Ok(())
+    parallel::create_parent_dirs(listings.iter().map(|(page, _)| page.output_path.as_path()))?;
+    parallel::try_for_each(&listings, |(page, listing)| {
+        log::info!("Rendering listing {}", page.url_path);
+
+        let template = templates[page.source_path.as_path()].clone();
+        let mut context = listing.context(&items);
+        context["collections"] = collections.clone();
+        let rendered =
+            render.render(&page.source_path, template, merge_contexts(config, context))?;
+
+        fs::write(&page.output_path, rendered)?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]
