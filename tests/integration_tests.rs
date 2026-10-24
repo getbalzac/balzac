@@ -89,6 +89,7 @@ fn test_partials_registration() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -135,6 +136,7 @@ fn test_partials_registration_without_folder() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -187,6 +189,7 @@ fn test_full_workflow_single_page() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -253,6 +256,7 @@ fn test_full_workflow_multiple_pages() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -329,6 +333,7 @@ fn test_workflow_with_global_data() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -384,6 +389,7 @@ fn test_make_dist_folder_creates_directory() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -429,6 +435,7 @@ fn test_make_dist_folder_recreates_existing_directory() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -476,6 +483,7 @@ fn test_workflow_preserves_file_extensions() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -534,6 +542,7 @@ fn test_template_with_conditionals() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -594,6 +603,7 @@ fn test_sitemap_generation_with_static_pages() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -697,6 +707,7 @@ fn test_sitemap_generation_with_collections() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -799,6 +810,7 @@ fn test_sitemap_excludes_pages_with_sitemap_exclude() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -859,6 +871,7 @@ fn test_no_sitemap_without_base_url() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -943,6 +956,7 @@ fn test_custom_tag_renderer_for_links() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -1049,6 +1063,7 @@ fn test_collections_available_in_static_and_details_pages() {
         listings: HashMap::default(),
         taxonomies: HashMap::default(),
         feed: None,
+        collections: HashMap::default(),
     };
 
     let resolved_config = config.resolve(&temp_path);
@@ -2789,4 +2804,381 @@ fn test_sitemap_encodes_nested_page_urls() {
     let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("Missing sitemap");
     assert!(sitemap.contains("<loc>https://example.com/docs/c%23</loc>"));
     assert!(sitemap.contains("<loc>https://example.com/docs/caf%C3%A9</loc>"));
+}
+
+/// Builds a project from `balzac.toml` contents and the given files, then
+/// discovers and renders its collections like `balzac build` does.
+fn build_collections(
+    toml: &str,
+    files: &[(&str, &str)],
+) -> (
+    TempDir,
+    balzac::error::Result<Vec<balzac::sitemap::PageEntry>>,
+) {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let root = temp.path();
+    for (path, content) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    let config: Config = toml::from_str(toml).expect("Failed to parse config");
+    let resolved_config = config.resolve(root);
+    make_dist_folder(&resolved_config).expect("Failed to make dist folder");
+
+    let pages = discover_collections(&resolved_config).and_then(|pages| {
+        let mut renderer = HandlebarsRenderer::new(&resolved_config);
+        renderer.init(&resolved_config)?;
+        render_collection_items(&resolved_config, &pages, &renderer)?;
+        Ok(pages)
+    });
+    (temp, pages)
+}
+
+const DETAILS: (&str, &str) = (
+    "pages/posts/details.hbs",
+    "<h1>{{fm.title}}</h1>{{{content}}}",
+);
+
+#[test]
+fn test_collection_slug_overrides_filename() {
+    let (temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            (
+                "content/posts/2024-01-01-hello.md",
+                "---\ntitle: Hello\nslug: hello-world\n---\n\nBody",
+            ),
+            (
+                "content/posts/v1.2.md",
+                "---\nslug: release-1.2\n---\n\nBody",
+            ),
+        ],
+    );
+    let pages = pages.unwrap();
+
+    let mut urls: Vec<_> = pages.iter().map(|p| p.url_path.as_str()).collect();
+    urls.sort_unstable();
+    assert_eq!(urls, vec!["/posts/hello-world", "/posts/release-1.2"]);
+    let dist = temp.path().join("dist/posts");
+    assert!(dist.join("hello-world.html").exists());
+    assert!(dist.join("release-1.2.html").exists());
+    assert!(!dist.join("2024-01-01-hello.html").exists());
+}
+
+#[test]
+fn test_collection_rejects_invalid_slug() {
+    for slug in [
+        "\"\"",
+        "",
+        "null",
+        "a/b",
+        "..",
+        "42",
+        "a#b",
+        "\"a?b\"",
+        "a%20b",
+        "a b",
+        "\" hello \"",
+    ] {
+        let (_temp, pages) = build_collections(
+            "",
+            &[
+                DETAILS,
+                (
+                    "content/posts/post.md",
+                    &format!("---\nslug: {slug}\n---\n"),
+                ),
+            ],
+        );
+        let error = pages.expect_err(&format!("slug {slug} should be rejected"));
+        assert!(error.to_string().contains("Invalid slug"), "{}", error);
+    }
+}
+
+#[test]
+fn test_collection_rejects_duplicate_output_paths() {
+    let (_temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            ("content/posts/a.md", "---\nslug: same\n---\n"),
+            ("content/posts/same.md", "Body"),
+        ],
+    );
+    let error = pages.expect_err("duplicate slugs should be rejected");
+    assert!(error.to_string().contains("/posts/same"), "{}", error);
+}
+
+#[test]
+fn test_collection_drafts_are_skipped_in_build() {
+    let (temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            ("content/posts/published.md", "---\ndraft: false\n---\n"),
+            ("content/posts/wip.md", "---\ndraft: true\n---\n"),
+        ],
+    );
+    let pages = pages.unwrap();
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].url_path, "/posts/published");
+    assert!(!temp.path().join("dist/posts/wip.html").exists());
+}
+
+#[test]
+fn test_collection_drafts_are_rendered_in_dev_mode() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("pages/posts")).unwrap();
+    fs::create_dir_all(root.join("content/posts")).unwrap();
+    fs::write(root.join(DETAILS.0), DETAILS.1).unwrap();
+    fs::write(root.join("content/posts/wip.md"), "---\ndraft: true\n---\n").unwrap();
+
+    let mut resolved_config = Config::default().resolve(root);
+    resolved_config.dev_mode = true;
+    let pages = discover_collections(&resolved_config).unwrap();
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].url_path, "/posts/wip");
+    assert!(
+        pages[0].sitemap_meta.exclude,
+        "Drafts should stay out of the sitemap"
+    );
+}
+
+#[test]
+fn test_collection_custom_template() {
+    let (temp, pages) = build_collections(
+        "[collections.posts]\ntemplate = \"post.hbs\"\n",
+        &[
+            ("pages/posts/post.hbs", "<article>{{fm.title}}</article>"),
+            ("content/posts/hello.md", "---\ntitle: Hello\n---\n"),
+            // Collections without config keep using details.hbs
+            ("pages/notes/details.hbs", "<aside>{{fm.title}}</aside>"),
+            ("content/notes/note.md", "---\ntitle: Note\n---\n"),
+        ],
+    );
+    assert_eq!(pages.unwrap().len(), 2);
+
+    let dist = temp.path().join("dist");
+    assert_eq!(
+        fs::read_to_string(dist.join("posts/hello.html")).unwrap(),
+        "<article>Hello</article>"
+    );
+    assert_eq!(
+        fs::read_to_string(dist.join("notes/note.html")).unwrap(),
+        "<aside>Note</aside>"
+    );
+}
+
+#[test]
+fn test_collection_without_configured_template_is_skipped() {
+    let (_temp, pages) = build_collections(
+        "[collections.posts]\ntemplate = \"post.hbs\"\n",
+        &[DETAILS, ("content/posts/hello.md", "Body")],
+    );
+    assert!(pages.unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_collection_skips_symlinked_folders() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("pages/posts")).unwrap();
+    fs::create_dir_all(root.join("content/posts")).unwrap();
+    fs::write(root.join(DETAILS.0), DETAILS.1).unwrap();
+    fs::write(root.join("content/posts/post.md"), "Body").unwrap();
+    // A cycle back to the collection folder must not recurse forever
+    std::os::unix::fs::symlink("..", root.join("content/posts/loop")).unwrap();
+
+    let pages = discover_collections(&Config::default().resolve(root)).unwrap();
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].url_path, "/posts/post");
+}
+
+#[test]
+fn test_collection_nested_folders() {
+    let (temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            ("content/posts/top.md", "---\ntitle: Top\n---\n"),
+            (
+                "content/posts/2024/jan/hello.md",
+                "---\ntitle: Nested\n---\n",
+            ),
+            ("content/posts/2024/renamed.md", "---\nslug: custom\n---\n"),
+        ],
+    );
+    let mut urls: Vec<_> = pages.unwrap().into_iter().map(|p| p.url_path).collect();
+    urls.sort();
+    assert_eq!(
+        urls,
+        vec!["/posts/2024/custom", "/posts/2024/jan/hello", "/posts/top"]
+    );
+
+    let dist = temp.path().join("dist/posts");
+    assert_eq!(
+        fs::read_to_string(dist.join("2024/jan/hello.html")).unwrap(),
+        "<h1>Nested</h1>"
+    );
+    assert!(dist.join("2024/custom.html").exists());
+}
+
+#[test]
+fn test_collections_context_uses_slug_and_nested_urls() {
+    let (temp, pages) = build_collections(
+        "",
+        &[
+            (
+                "pages/posts/details.hbs",
+                "{{#each collections.posts}}[{{slug}} {{url}}]{{/each}}",
+            ),
+            (
+                "content/posts/2024-01-01-hello.md",
+                "---\nslug: hello\n---\n",
+            ),
+            ("content/posts/2024/nested.md", "Body"),
+        ],
+    );
+    pages.unwrap();
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("dist/posts/hello.html")).unwrap(),
+        "[hello /posts/hello][nested /posts/2024/nested]"
+    );
+}
+
+#[test]
+fn test_collection_rejects_outputs_differing_only_in_case() {
+    let (_temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            ("content/posts/a.md", "---\nslug: Jan\n---\n"),
+            ("content/posts/b.md", "---\nslug: jan\n---\n"),
+        ],
+    );
+    let error = pages.expect_err("case-only duplicates should be rejected");
+    assert!(error.to_string().contains("differ only in case"), "{error}");
+}
+
+#[test]
+fn test_collection_rejects_unreachable_urls() {
+    for (path, content) in [
+        // `#` would make the rest of the URL a fragment
+        ("content/posts/news#2024/hello.md", "Body"),
+        ("content/posts/what?.md", "Body"),
+        // Hosts decode `/posts/a%20b` to `a b`; browsers turn `\` into `/`
+        ("content/posts/a%20b.md", "Body"),
+        ("content/posts/a\\b.md", "Body"),
+        // Hosts decode `/posts/a%20b/` to `a b`, missing the `a%20b` folder
+        ("content/posts/a%20b/hello.md", "Body"),
+        // A `jan.html/` folder can't sit next to the `jan.html` file of `jan.md`
+        ("content/posts/jan.HTML/x.md", "Body"),
+        // Browsers request `/posts/news/2024/hello` for `/posts/news\2024/hello`
+        ("content/posts/news\\2024/hello.md", "Body"),
+        // `/posts/article.html` would be served by the file of `/posts/article`
+        ("content/posts/post.md", "---\nslug: article.HTML\n---\n"),
+        ("content/posts/article.html.md", "Body"),
+    ] {
+        let (_temp, pages) = build_collections("", &[DETAILS, (path, content)]);
+        let error = pages.expect_err(&format!("{path} should be rejected"));
+        assert!(error.to_string().contains("Invalid URL"), "{path}: {error}");
+    }
+}
+
+#[test]
+fn test_collection_slug_and_nested_folders_with_directory_urls() {
+    let (temp, pages) = build_collections(
+        "url_style = \"directory\"\n",
+        &[
+            (
+                "pages/posts/details.hbs",
+                "{{#each collections.posts}}[{{slug}} {{url}}]{{/each}}",
+            ),
+            (
+                "content/posts/2024-01-01-hello.md",
+                "---\nslug: hello\n---\n",
+            ),
+            ("content/posts/2024/nested.md", "Body"),
+        ],
+    );
+    let mut urls: Vec<_> = pages.unwrap().into_iter().map(|p| p.url_path).collect();
+    urls.sort();
+    assert_eq!(urls, vec!["/posts/2024/nested/", "/posts/hello/"]);
+
+    let dist = temp.path().join("dist/posts");
+    assert_eq!(
+        fs::read_to_string(dist.join("hello/index.html")).unwrap(),
+        "[hello /posts/hello/][nested /posts/2024/nested/]"
+    );
+    assert!(dist.join("2024/nested/index.html").exists());
+    assert!(!dist.join("2024-01-01-hello").exists());
+}
+
+#[test]
+fn test_custom_collection_template_error_names_template_and_source() {
+    let (_temp, pages) = build_collections(
+        "[collections.posts]\ntemplate = \"post.hbs\"",
+        &[
+            ("pages/posts/post.hbs", "{{#if}}"),
+            ("content/posts/nested/item.md", "Body"),
+        ],
+    );
+    let error = pages.unwrap_err();
+    assert!(
+        matches!(&error, balzac::error::Error::Template { path, page: Some(page), .. }
+            if path.ends_with("pages/posts/post.hbs")
+                && page.ends_with("content/posts/nested/item.md")),
+        "{error}"
+    );
+}
+
+#[test]
+fn test_static_page_shadows_collection_item_by_slug_and_nested_path() {
+    let (_temp, pages) = build_collections(
+        "",
+        &[
+            DETAILS,
+            ("pages/posts/hello.hbs", "<h1>Static</h1>"),
+            ("pages/posts/2024/a.hbs", "<h1>Static</h1>"),
+            ("content/posts/x.md", "---\nslug: hello\n---\n"),
+            ("content/posts/2024/a.md", "---\ntitle: A\n---\n"),
+            ("content/posts/kept.md", "---\ntitle: Kept\n---\n"),
+        ],
+    );
+    let urls: Vec<_> = pages.unwrap().into_iter().map(|p| p.url_path).collect();
+    assert_eq!(urls, vec!["/posts/kept"]);
+}
+
+#[test]
+fn test_configured_collection_template_is_not_a_static_page() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let root = temp.path();
+    for (path, content) in [
+        ("pages/posts/templates/post.hbs", "<h1>{{fm.title}}</h1>"),
+        ("pages/posts/details.hbs", "<h1>Details</h1>"),
+        ("content/posts/a.md", "---\ntitle: A\n---\n"),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let config: Config =
+        toml::from_str("[collections.posts]\ntemplate = \"templates/post.hbs\"\n").unwrap();
+    let resolved_config = config.resolve(root);
+
+    let urls: Vec<_> = discover_static_pages(&resolved_config)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.url_path)
+        .collect();
+    // `details.hbs` is not the template here, so it is a regular page
+    assert_eq!(urls, vec!["/posts/details"]);
 }

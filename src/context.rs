@@ -80,10 +80,14 @@ pub fn build_collections_context(
     Ok(serde_json::Value::Object(collections))
 }
 
-fn item_slug(page: &PageEntry) -> String {
-    page.source_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
+/// The item's last URL segment: its `slug` frontmatter when set, else the
+/// markdown file name.
+fn item_slug(page: &PageEntry) -> &str {
+    // Directory-style URLs end with `/` (`/posts/hello/`)
+    page.url_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
         .unwrap_or_default()
 }
 
@@ -101,7 +105,9 @@ pub fn compare_collection_items(a: &PageEntry, b: &PageEntry) -> Ordering {
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
-    .then_with(|| a.source_path.file_stem().cmp(&b.source_path.file_stem()))
+    .then_with(|| item_slug(a).cmp(item_slug(b)))
+    // Nested items can share a slug (`/posts/2024/a`, `/posts/2025/a`)
+    .then_with(|| a.url_path.cmp(&b.url_path))
 }
 
 #[cfg(test)]
@@ -187,6 +193,25 @@ mod tests {
         assert_eq!(
             slugs(&context, "posts"),
             vec!["new", "same-a", "same-b", "old", "alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn test_compare_collection_items_breaks_ties_by_slug_then_url() {
+        // `a.md` has `slug: zeta`, `b.md` has `slug: alpha`
+        let mut a = collection_page("posts", "a", serde_json::json!(null));
+        a.url_path = "/posts/zeta".to_string();
+        let mut b = collection_page("posts", "b", serde_json::json!(null));
+        b.url_path = "/posts/alpha".to_string();
+        assert_eq!(compare_collection_items(&a, &b), Ordering::Greater);
+
+        let mut nested_2025 = collection_page("posts", "x", serde_json::json!(null));
+        nested_2025.url_path = "/posts/2025/same".to_string();
+        let mut nested_2024 = collection_page("posts", "y", serde_json::json!(null));
+        nested_2024.url_path = "/posts/2024/same".to_string();
+        assert_eq!(
+            compare_collection_items(&nested_2025, &nested_2024),
+            Ordering::Greater
         );
     }
 }

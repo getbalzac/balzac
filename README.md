@@ -73,8 +73,9 @@ balzac dev --root ./my-site
 Current behavior:
 
 - direct changes to page files in `pages/` (including nested ones like `pages/docs/intro.hbs`) trigger a targeted rebuild and reload only for that page, after checking the site for output conflicts; deleting a page removes its output and any output folders left empty. A full rebuild runs instead for the 404 page, a page that [shadows a collection item](#collections), and a deleted page whose output another page still writes (e.g. deleting `pages/docs/intro.hbs` while `pages/docs/intro.html` remains)
-- direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; listing pages that are no longer generated (e.g. a tag with no posts left) are removed
-- changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
+- direct changes to markdown files in `content/<collection>/` (including nested folders) re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; generated pages that are no longer produced (deleted items, changed `slug`s, a tag with no posts left) are removed
+- changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection templates (`details.hbs` by default) trigger a full rebuild and full-page reload
+- draft collection items (`draft: true`) are rendered
 - hooks are skipped unless you opt in with `dev = true` in `[hooks]` (see [Hooks in dev mode](#hooks-in-dev-mode))
 - a failed build (template, frontmatter or config error) does not stop the server: the error is logged and shown in an overlay in the browser until the next successful build, and any change made while the build is failing rebuilds the whole site. Only a `balzac.toml` that cannot be read or parsed when the server starts stops it, since the config says which directories to serve and watch
 - missing paths are answered with a `404` status and your `404.html` page if you have one (see [404 Page](#404-page)), otherwise plain text
@@ -105,7 +106,7 @@ With `directory`, URLs end with a slash (`/docs/`).
 
 Some files in a subfolder are templates rather than pages, but only when the feature that uses them is set up. Otherwise they're rendered as regular pages (e.g. `pages/archive/list.hbs` at `/archive/list`):
 
-- `pages/<collection>/details.hbs` when a matching `content/<collection>` directory exists (see [Collections](#collections))
+- `pages/<collection>/details.hbs` (or the collection's configured [`template`](#collection-config)) when a matching `content/<collection>` directory exists (see [Collections](#collections))
 - `pages/<collection>/list.hbs` when `[listings.<collection>]` is configured
 - `pages/<taxonomy>/term.hbs` and `pages/<taxonomy>/taxonomy.hbs` when `[taxonomies.<taxonomy>]` is configured
 
@@ -133,6 +134,7 @@ The build fails if two page files would write the same file, e.g. `pages/docs/in
 - feed (optional): RSS and Atom feeds for collections, see [Feeds](#feeds)
 - hooks (optional): shell commands run during the build, see [Hooks](#hooks)
 - bundler (optional): asset bundler integration, see [Vite](#vite)
+- collections (optional): per-collection settings, see [Collections](#collections)
 
 Unknown keys are rejected, so a typo like `ouput_directory` or `[sitemp]` fails the build (and `balzac dev`) with the offending line and a suggestion:
 
@@ -360,6 +362,8 @@ To use a collection, create a subfolder in the content_directory folder with the
 
 The next step is to create a file in the pages_directory called <name_of_your_collection>/details.hbs (i.e. posts/details.hbs).
 
+Each markdown file is rendered to `/<collection>/<file name>`, e.g. `content/posts/hello.md` becomes `/posts/hello`. Markdown files can be organised in nested folders; the folders are kept in the URL, so `content/posts/2024/hello.md` becomes `/posts/2024/hello`.
+
 Other pages in that folder are still rendered as static pages, so `pages/posts/index.hbs` can serve as a listing page at `/posts`. If a static page and a collection item would render to the same file (e.g. `pages/posts/hello.hbs` and `content/posts/hello.md`), the static page wins and Balzac logs a warning.
 
 ### Frontmatter
@@ -374,12 +378,28 @@ title: "Test"
 
 will be available under `fm.title`
 
+Some frontmatter keys change how an item is built:
+
+- `slug`: replaces the file name in the URL. `content/posts/2024-01-01-hello.md` with `slug: hello-world` is rendered to `/posts/hello-world`. Nested folders are kept. The slug must be a non-empty, single URL segment: no `/`, `\`, `#`, `?`, `%` or whitespace, and it must not end with `.html`. Collection, folder and file names must not contain `#`, `?`, `%` or `\` either, and nested folder names must not end with `.html`. Two items resolving to the same URL, or to URLs differing only in letter case, fail the build.
+- `draft: true`: the item is skipped by `balzac build` but rendered by `balzac dev` (and kept out of the sitemap).
+
+### Collection Config
+
+Collections work without any configuration. To change how a collection is rendered, add a `[collections.<name>]` section to `balzac.toml`:
+
+```toml
+[collections.posts]
+template = "post.hbs"
+```
+
+- `template`: template used to render each item, relative to `<pages_directory>/<name>/` (here `pages/posts/post.hbs`). Defaults to `details.hbs`. It must stay inside that folder (subfolders like `templates/post.hbs` are fine); a template elsewhere would also be built as a static page.
+
 ### Listing collection items
 
-Every page (static pages and collection `details.hbs` pages) has access to all collections under the `collections` namespace. `collections.<name>` is an array of items with:
+Every page (static pages and collection item pages) has access to all collections under the `collections` namespace. `collections.<name>` is an array of items with:
 
 - `url`: the item's URL (e.g. `/posts/hello`, or `/posts/hello/` with `url_style = "directory"`)
-- `slug`: the markdown file name without extension (e.g. `hello`)
+- `slug`: the last segment of the item's URL: its `slug` frontmatter, or the markdown file name without extension (e.g. `hello`)
 - `fm`: the item's frontmatter
 - `content`: the item's rendered HTML
 
@@ -393,7 +413,7 @@ Items are sorted by `fm.date` (compared as text, so use ISO dates like `2025-01-
 </ul>
 ```
 
-Only collections that have a `details.hbs` page are included.
+Only collections that have a template (`details.hbs` by default) are included. Drafts are listed in `balzac dev` only.
 
 ### Listings and pagination
 

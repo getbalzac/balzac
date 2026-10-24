@@ -127,9 +127,11 @@ struct DevSession {
     /// no write is missed, at the cost of re-applying the (rare) source writes
     /// of `render_init_after`, `build_before` and `render_before`.
     full_build_baselines: Option<(Snapshot, Snapshot)>,
-    /// Output files of the generated listing pages from the last render, so
-    /// pages that are no longer generated can be removed.
-    listing_outputs: BTreeSet<PathBuf>,
+    /// Output files of the generated pages from the last render: collection
+    /// items and listing pages. Their outputs depend on frontmatter (`slug`,
+    /// taxonomy terms, item counts), so they cannot be recomputed from source
+    /// paths once files change or are deleted.
+    generated_outputs: BTreeSet<PathBuf>,
     /// Feed files written by the last render, so stale ones can be removed
     feed_paths: BTreeSet<PathBuf>,
     /// Error of the last build, until a build succeeds again.
@@ -147,7 +149,7 @@ impl DevSession {
             hooks: dev_hooks(parsed_config),
             hooks_paused: false,
             full_build_baselines: None,
-            listing_outputs: BTreeSet::new(),
+            generated_outputs: BTreeSet::new(),
             feed_paths: BTreeSet::new(),
             build_error: None,
         };
@@ -334,8 +336,13 @@ impl DevSession {
                     .iter()
                     .any(|target| target.kind == TargetKind::CollectionItem)
                 {
+                    // Generated outputs are pruned by `render_site`; deleted
+                    // static pages in the same batch are not.
                     for target in &targets {
-                        if target.change_type == ChangeType::Deleted {
+                        if target.kind == TargetKind::StaticPage
+                            && target.change_type == ChangeType::Deleted
+                            && !self.generated_outputs.contains(&target.output_path)
+                        {
                             remove_output_for_source(&self.resolved_config, &target.source_path)?;
                         }
                     }
@@ -362,9 +369,10 @@ impl DevSession {
     fn handle_static_page_change(&self, target: &TargetedChange) -> Result<Option<ReloadMessage>> {
         match target.change_type {
             ChangeType::Deleted => {
-                // A page rejected for colliding with a listing never replaced the
-                // listing's file, so that file is not the page's to remove.
-                if !self.listing_outputs.contains(&target.output_path) {
+                // A page rejected for colliding with a generated page (collection
+                // item or listing) never replaced its file, so that file is not
+                // the page's to remove.
+                if !self.generated_outputs.contains(&target.output_path) {
                     remove_output_for_source(&self.resolved_config, &target.source_path)?;
                 }
                 Ok(Some(ReloadMessage::targeted(&target.url_path)))
@@ -403,7 +411,7 @@ impl DevSession {
         self.run_hook(HookPhase::RenderInitAfter)?;
         self.run_hook(HookPhase::BuildBefore)?;
         make_dist_folder(&self.resolved_config)?;
-        self.listing_outputs.clear();
+        self.generated_outputs.clear();
         self.render_site_with(&renderer)?;
         write_robots(&self.resolved_config)?;
         markdown::write_highlight_css(&self.resolved_config)?;
@@ -428,7 +436,7 @@ impl DevSession {
         render_collection_items(&self.resolved_config, site_pages.all(), renderer)?;
         render_listing_pages(&self.resolved_config, site_pages.all(), renderer)?;
         self.run_hook(HookPhase::RenderAfter)?;
-        self.prune_stale_listings(&site_pages)?;
+        self.prune_stale_outputs(&site_pages)?;
         write_sitemap(&self.resolved_config, &site_pages)?;
         self.refresh_feeds(&site_pages, renderer)
     }
@@ -453,24 +461,30 @@ impl DevSession {
         Ok(())
     }
 
-    /// Removes listing pages rendered previously but no longer generated, e.g.
-    /// a term whose last item was untagged, or a page beyond the new last page.
-    fn prune_stale_listings(&mut self, site_pages: &SitePages) -> std::io::Result<()> {
-        let listing_outputs: BTreeSet<PathBuf> = site_pages
+    /// Removes generated pages rendered previously but no longer produced, e.g.
+    /// a deleted collection item, an item whose `slug` changed, a term whose
+    /// last item was untagged, or a page beyond the new last page.
+    fn prune_stale_outputs(&mut self, site_pages: &SitePages) -> std::io::Result<()> {
+        let generated_outputs: BTreeSet<PathBuf> = site_pages
             .all()
             .iter()
-            .filter(|page| matches!(page.page_type, PageType::Listing(_)))
+            .filter(|page| {
+                matches!(
+                    page.page_type,
+                    PageType::Collection { .. } | PageType::Listing(_)
+                )
+            })
             .map(|page| page.output_path.clone())
             .collect();
 
-        // With directory-style URLs another page can take over a stale listing's
+        // With directory-style URLs another page can take over a stale generated
         // file (e.g. `content/tags/rust.md` replacing the `/tags/rust/` term page).
         let page_outputs: BTreeSet<&Path> = site_pages
             .all()
             .iter()
             .map(|page| page.output_path.as_path())
             .collect();
-        for stale in self.listing_outputs.difference(&listing_outputs) {
+        for stale in self.generated_outputs.difference(&generated_outputs) {
             if page_outputs.contains(stale.as_path()) {
                 continue;
             }
@@ -480,7 +494,7 @@ impl DevSession {
             remove_empty_parents(stale, &self.resolved_config.output_directory)?;
         }
 
-        self.listing_outputs = listing_outputs;
+        self.generated_outputs = generated_outputs;
         Ok(())
     }
 
@@ -660,7 +674,7 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
     }
 
     if let Ok(relative_path) = change.path.strip_prefix(&config.content_directory) {
-        if relative_path.components().count() == 2
+        if relative_path.components().count() >= 2
             && change.path.extension().and_then(|ext| ext.to_str()) == Some("md")
         {
             if let Some((_, location)) = collection_location_from_source(config, &change.path) {
@@ -1528,6 +1542,35 @@ mod tests {
         };
 
         assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_classify_static_page_shadowing_item_by_slug_or_nested_path_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        setup_shadowed_collection(&config);
+        fs::remove_file(config.content_directory.join("posts/hello.md")).unwrap();
+        fs::write(
+            config.content_directory.join("posts/other.md"),
+            "---\nslug: hello\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(config.pages_directory.join("posts/2024")).unwrap();
+        fs::create_dir_all(config.content_directory.join("posts/2024")).unwrap();
+        fs::write(config.pages_directory.join("posts/2024/a.hbs"), "A").unwrap();
+        fs::write(config.content_directory.join("posts/2024/a.md"), "Body").unwrap();
+
+        for page in ["posts/hello.hbs", "posts/2024/a.hbs"] {
+            let change = SourceChange {
+                path: config.pages_directory.join(page),
+                change_type: ChangeType::Modified,
+                is_dir: false,
+            };
+            assert_eq!(
+                classify_changes(&config, &[change]),
+                ChangePlan::FullReload,
+                "{page}"
+            );
+        }
     }
 
     #[test]
@@ -3493,6 +3536,304 @@ render_after = "sh -c 'test ! -e flip || rm -rf assets'"
         assert_eq!(
             fs::read_to_string(root.join("dist/assets/generated.css")).unwrap(),
             "built\nbuilt\n"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_supports_dotted_urls() {
+        let (_temp_dir, config) = setup_dev_project();
+        let posts = config.output_directory.join("posts");
+        fs::create_dir_all(&posts).unwrap();
+        fs::write(posts.join("release-1.2.html"), "<h1>1.2</h1>").unwrap();
+
+        let path = resolve_output_path(&config.output_directory, "/posts/release-1.2").unwrap();
+        assert_eq!(path, posts.join("release-1.2.html"));
+        assert!(resolve_output_path(&config.output_directory, "/posts/missing.css").is_none());
+    }
+
+    fn setup_collection_session(toml: &str, files: &[(&str, &str)]) -> (TempDir, DevSession) {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("balzac.toml"), toml).unwrap();
+        for (path, content) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        let session = DevSession::new(root).unwrap();
+        (temp_dir, session)
+    }
+
+    fn modify(session: &mut DevSession, path: &Path, content: &str) -> Vec<ReloadMessage> {
+        fs::write(path, content).unwrap();
+        session
+            .process_changes(&[SourceChange {
+                path: path.to_path_buf(),
+                change_type: ChangeType::Modified,
+                is_dir: false,
+            }])
+            .unwrap()
+    }
+
+    const DETAILS: (&str, &str) = ("pages/posts/details.hbs", "<h1>{{fm.title}}</h1>");
+
+    #[test]
+    fn test_process_changes_moves_output_when_slug_changes() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[DETAILS, ("content/posts/post.md", "---\ntitle: v1\n---\n")],
+        );
+        let root = temp_dir.path();
+        let source = root.join("content/posts/post.md");
+        assert!(root.join("dist/posts/post.html").exists());
+
+        let messages = modify(
+            &mut session,
+            &source,
+            "---\ntitle: v2\nslug: renamed\n---\n",
+        );
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert!(!root.join("dist/posts/post.html").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/renamed.html")).unwrap(),
+            "<h1>v2</h1>"
+        );
+
+        // Editing without touching the slug keeps the output in place
+        modify(
+            &mut session,
+            &source,
+            "---\ntitle: v3\nslug: renamed\n---\n",
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/renamed.html")).unwrap(),
+            "<h1>v3</h1>"
+        );
+
+        // Removing the slug goes back to the filename
+        modify(&mut session, &source, "---\ntitle: v4\n---\n");
+        assert!(!root.join("dist/posts/renamed.html").exists());
+        assert!(root.join("dist/posts/post.html").exists());
+    }
+
+    #[test]
+    fn test_process_changes_removes_slug_output_on_delete() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                ("content/posts/post.md", "---\nslug: custom\n---\n"),
+            ],
+        );
+        let root = temp_dir.path();
+        let source = root.join("content/posts/post.md");
+        assert!(root.join("dist/posts/custom.html").exists());
+
+        fs::remove_file(&source).unwrap();
+        let messages = session
+            .process_changes(&[SourceChange {
+                path: source,
+                change_type: ChangeType::Deleted,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert!(!root.join("dist/posts/custom.html").exists());
+    }
+
+    #[test]
+    fn test_process_changes_rejects_slug_collision() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                ("content/posts/a.md", "---\ntitle: A\n---\n"),
+                ("content/posts/b.md", "---\ntitle: B\n---\n"),
+            ],
+        );
+        let root = temp_dir.path();
+        let source = root.join("content/posts/b.md");
+        fs::write(&source, "---\ntitle: B\nslug: a\n---\n").unwrap();
+
+        let result = session.process_changes(&[SourceChange {
+            path: source,
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        }]);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/a.html")).unwrap(),
+            "<h1>A</h1>"
+        );
+        assert!(root.join("dist/posts/b.html").exists());
+    }
+
+    #[test]
+    fn test_process_changes_handles_rename_keeping_slug() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                ("content/posts/b.md", "---\ntitle: v1\nslug: hello\n---\n"),
+            ],
+        );
+        let root = temp_dir.path();
+        let old_source = root.join("content/posts/b.md");
+        let new_source = root.join("content/posts/a.md");
+
+        fs::rename(&old_source, &new_source).unwrap();
+        // `a.md` sorts before `b.md`, so the creation is classified first
+        let messages = session
+            .process_changes(&[
+                SourceChange {
+                    path: new_source.clone(),
+                    change_type: ChangeType::Created,
+                    is_dir: false,
+                },
+                SourceChange {
+                    path: old_source,
+                    change_type: ChangeType::Deleted,
+                    is_dir: false,
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert!(root.join("dist/posts/hello.html").exists());
+
+        // Later edits to the renamed file still go through
+        modify(
+            &mut session,
+            &new_source,
+            "---\ntitle: v2\nslug: hello\n---\n",
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/hello.html")).unwrap(),
+            "<h1>v2</h1>"
+        );
+    }
+
+    #[test]
+    fn test_dev_renders_drafts() {
+        let (temp_dir, _session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                (
+                    "content/posts/wip.md",
+                    "---\ntitle: WIP\ndraft: true\n---\n",
+                ),
+            ],
+        );
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("dist/posts/wip.html")).unwrap(),
+            "<h1>WIP</h1>"
+        );
+    }
+
+    #[test]
+    fn test_process_changes_updates_nested_collection_item() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                ("content/posts/2024/post.md", "---\ntitle: v1\n---\n"),
+            ],
+        );
+        let root = temp_dir.path();
+
+        let messages = modify(
+            &mut session,
+            &root.join("content/posts/2024/post.md"),
+            "---\ntitle: v2\n---\n",
+        );
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/2024/post.html")).unwrap(),
+            "<h1>v2</h1>"
+        );
+    }
+
+    #[test]
+    fn test_classify_custom_collection_template_change_as_full_reload() {
+        let (_temp_dir, mut config) = setup_dev_project();
+        config.collections.insert(
+            "posts".to_string(),
+            crate::config::CollectionConfig {
+                template: Some("post.hbs".to_string()),
+            },
+        );
+        fs::create_dir_all(config.content_directory.join("posts")).unwrap();
+        let change = SourceChange {
+            path: config.pages_directory.join("posts").join("post.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert!(is_page_template(&config, &change.path));
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_process_changes_removes_deleted_static_page_with_collection_change() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "",
+            &[
+                DETAILS,
+                ("pages/about.hbs", "<h1>About</h1>"),
+                ("content/posts/post.md", "---\ntitle: v1\n---\n"),
+            ],
+        );
+        let root = temp_dir.path();
+        assert!(root.join("dist/about.html").exists());
+
+        fs::remove_file(root.join("pages/about.hbs")).unwrap();
+        fs::write(root.join("content/posts/post.md"), "---\ntitle: v2\n---\n").unwrap();
+        let messages = session
+            .process_changes(&[
+                SourceChange {
+                    path: root.join("content/posts/post.md"),
+                    change_type: ChangeType::Modified,
+                    is_dir: false,
+                },
+                SourceChange {
+                    path: root.join("pages/about.hbs"),
+                    change_type: ChangeType::Deleted,
+                    is_dir: false,
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(messages, vec![ReloadMessage::full()]);
+        assert!(!root.join("dist/about.html").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/post.html")).unwrap(),
+            "<h1>v2</h1>"
+        );
+    }
+
+    #[test]
+    fn test_process_changes_moves_directory_output_when_slug_changes() {
+        let (temp_dir, mut session) = setup_collection_session(
+            "url_style = \"directory\"\n",
+            &[DETAILS, ("content/posts/post.md", "---\ntitle: v1\n---\n")],
+        );
+        let root = temp_dir.path();
+        assert!(root.join("dist/posts/post/index.html").exists());
+
+        modify(
+            &mut session,
+            &root.join("content/posts/post.md"),
+            "---\ntitle: v2\nslug: renamed\n---\n",
+        );
+        // The old page's now-empty folder goes too
+        assert!(!root.join("dist/posts/post").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("dist/posts/renamed/index.html")).unwrap(),
+            "<h1>v2</h1>"
         );
     }
 }
