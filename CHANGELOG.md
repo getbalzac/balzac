@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.11] - 2026-10-24
+
+### 🚀 Features
+
+- Expose collections to page templates
+- Add 404 page support and robots.txt generation
+- Add url_style option for directory-style clean URLs
+- Add paginated listings and taxonomy pages
+- Syntax highlighting, heading ids, toc, footnotes and excerpts for markdown
+- Support YAML frontmatter in static pages
+- Generate RSS and Atom feeds for collections
+- Report build errors with file context instead of panicking
+- Support nested static pages
+- Reject unknown keys in balzac.toml
+- Run hooks in dev mode when opted in with `[hooks] dev = true`
+- Flexible collections (slug, drafts, custom templates, nested folders)
+- Built-in template helpers (url_for, asset, date, markdown, sort, limit, where, json, slugify)
+- User-defined template helpers written in Rhai
+- Publish npm binaries as per-platform optional dependencies
+
+### 🐛 Bug Fixes
+
+- Copy assets directory recursively
+- Restore url_style, dropped when rebasing listings onto it
+
+### 📚 Documentation
+
+- Document markdown options, toc and excerpt
+
+### ⚡ Performance
+
+- Compare borrowed strings when sorting collection items
+
+### ⚙️ Miscellaneous Tasks
+
+- Set up janitor PR reviews
+- Enforce stricter clippy lints
+- Regenerate janitor workflow for v2.1.0
 ## [0.1.10] - 2026-06-04
 
 ### 🚀 Features
