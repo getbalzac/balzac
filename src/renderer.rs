@@ -446,6 +446,19 @@ impl HandlebarsRenderer<'_> {
 }
 
 impl HandlebarsRenderer<'_> {
+    /// Renders `template`, the content of the file at `path`, with a context
+    /// that can be reused across renders (see `SiteContext`).
+    pub fn render_with_context(
+        &self,
+        path: &Path,
+        template: &str,
+        context: &handlebars::Context,
+    ) -> Result<String> {
+        self.registry
+            .render_template_with_context(template, context)
+            .map_err(|e| self.render_error(path, &e))
+    }
+
     /// Renders a markdown string from a template (the `markdown` helper), with
     /// tag templates rendered by `registry`. With `inline`, a document made of
     /// a single paragraph is rendered without the `<p>` around it.
@@ -501,9 +514,7 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
     }
     fn render(&self, path: &Path, template: String, data: serde_json::Value) -> Result<String> {
         // `render_template` would serialize `data` into a copy; wrapping moves it
-        self.registry
-            .render_template_with_context(&template, &handlebars::Context::from(data))
-            .map_err(|e| self.render_error(path, &e))
+        self.render_with_context(path, &template, &handlebars::Context::from(data))
     }
 
     fn render_markdown(&self, body: &str) -> Result<String> {

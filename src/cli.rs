@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config::{Config, CreateConfigError, InitFeature, ResolvedConfig};
+use crate::context::SiteContext;
 use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
 use crate::listing::render_listing_pages;
@@ -110,35 +111,7 @@ pub fn build(path: &Path) {
 
     hook_executor.execute(HookPhase::RenderBefore);
 
-    let start = std::time::Instant::now();
-    match render_pages(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering static pages: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered static pages (took {:?})", start.elapsed());
-
-    let start = std::time::Instant::now();
-    match render_collection_items(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering collections: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered collections (took {:?})", start.elapsed());
-
-    let start = std::time::Instant::now();
-    match render_listing_pages(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering listings: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered listings (took {:?})", start.elapsed());
+    render_site(&resolved_config, &site_pages, &render);
 
     hook_executor.execute(HookPhase::RenderAfter);
 
@@ -180,6 +153,53 @@ pub fn build(path: &Path) {
     log::info!("Handled assets (took {:?})", start.elapsed());
 
     hook_executor.execute(HookPhase::BuildAfter);
+}
+
+/// Renders every page of the site, exiting on the first error.
+fn render_site(
+    resolved_config: &ResolvedConfig,
+    site_pages: &SitePages,
+    render: &HandlebarsRenderer,
+) {
+    let start = std::time::Instant::now();
+    let site = match SiteContext::new(resolved_config, site_pages.all(), render) {
+        Ok(site) => site,
+        Err(e) => {
+            log::error!("Error rendering collection content: {e}");
+            std::process::exit(1);
+        }
+    };
+    log::info!("Rendered collection content (took {:?})", start.elapsed());
+
+    let start = std::time::Instant::now();
+    match render_pages(resolved_config, &site, render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering static pages: {e}");
+            std::process::exit(1);
+        }
+    }
+    log::info!("Rendered static pages (took {:?})", start.elapsed());
+
+    let start = std::time::Instant::now();
+    match render_collection_items(resolved_config, &site, render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering collections: {e}");
+            std::process::exit(1);
+        }
+    }
+    log::info!("Rendered collections (took {:?})", start.elapsed());
+
+    let start = std::time::Instant::now();
+    match render_listing_pages(&site, render) {
+        Ok(()) => {}
+        Err(e) => {
+            log::error!("Error rendering listings: {e}");
+            std::process::exit(1);
+        }
+    }
+    log::info!("Rendered listings (took {:?})", start.elapsed());
 }
 
 fn build_feeds(
