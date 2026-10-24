@@ -18,10 +18,11 @@ use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageType, SitePages};
 use crate::{
-    NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_location_from_source, discover_site_pages,
-    is_supported_page_file, make_dist_folder, remove_output_for_source, render_collection_items,
-    render_pages, render_static_page, static_page_entry_from_source, write_feeds, write_robots,
-    write_sitemap,
+    NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_item_for_static_page,
+    collection_location_from_source, conflicting_static_page, discover_site_pages,
+    is_page_template, is_supported_page_file, make_dist_folder, remove_empty_parents,
+    remove_output_for_source, render_collection_items, render_pages, render_static_page,
+    static_page_entry_from_source, write_feeds, write_robots, write_sitemap,
 };
 
 const SSE_ENDPOINT: &str = "/__balzac/events";
@@ -30,7 +31,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Shows the build error over the page, and reloads the page when told to by
 /// the dev server, or when the error it shows has been fixed meanwhile.
-const CLIENT_SCRIPT: &str = r#"<script>(()=>{const normalize=(value)=>{if(!value||value==="/")return "/";return value.endsWith("/")?value.slice(0,-1):value;};let currentError=null;const showError=(message)=>{let overlay=document.getElementById("__balzac-error");if(!overlay){overlay=document.createElement("div");overlay.id="__balzac-error";overlay.setAttribute("style","position:fixed;inset:0;z-index:2147483647;overflow:auto;padding:2rem;background:rgba(24,24,27,.96);color:#fecaca;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace");const title=document.createElement("strong");title.textContent="Balzac build failed";title.setAttribute("style","display:block;margin-bottom:1rem;color:#fff;font-size:16px");const details=document.createElement("pre");details.setAttribute("style","margin:0;white-space:pre-wrap");overlay.append(title,details);(document.body||document.documentElement).append(overlay);}overlay.querySelector("pre").textContent=message;currentError=message;};const buildError=__BUILD_ERROR__;if(buildError)showError(buildError);const source=new EventSource("__SSE_ENDPOINT__");source.onmessage=(event)=>{const payload=JSON.parse(event.data);if(payload.kind==="error"||(payload.kind==="status"&&payload.message)){showError(payload.message);return;}if(payload.kind==="status"){if(currentError)window.location.reload();return;}if(payload.kind==="full"){window.location.reload();return;}if(payload.kind==="targeted"&&normalize(window.location.pathname)===normalize(payload.url_path)){window.location.reload();}};})();</script>"#;
+const CLIENT_SCRIPT: &str = r#"<script>(()=>{const decodeSegment=(segment)=>{try{return decodeURIComponent(segment);}catch{return segment;}};const decode=(value)=>value.split("/").map(decodeSegment).join("/");const normalize=(value)=>{const path=(value||"/").replace(/\.html$/,"").replace(/\/index$/,"/");return path.length>1&&path.endsWith("/")?path.slice(0,-1):path||"/";};let currentError=null;const showError=(message)=>{let overlay=document.getElementById("__balzac-error");if(!overlay){overlay=document.createElement("div");overlay.id="__balzac-error";overlay.setAttribute("style","position:fixed;inset:0;z-index:2147483647;overflow:auto;padding:2rem;background:rgba(24,24,27,.96);color:#fecaca;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace");const title=document.createElement("strong");title.textContent="Balzac build failed";title.setAttribute("style","display:block;margin-bottom:1rem;color:#fff;font-size:16px");const details=document.createElement("pre");details.setAttribute("style","margin:0;white-space:pre-wrap");overlay.append(title,details);(document.body||document.documentElement).append(overlay);}overlay.querySelector("pre").textContent=message;currentError=message;};const buildError=__BUILD_ERROR__;if(buildError)showError(buildError);const source=new EventSource("__SSE_ENDPOINT__");source.onmessage=(event)=>{const payload=JSON.parse(event.data);if(payload.kind==="error"||(payload.kind==="status"&&payload.message)){showError(payload.message);return;}if(payload.kind==="status"){if(currentError)window.location.reload();return;}if(payload.kind==="full"){window.location.reload();return;}if(payload.kind==="targeted"&&normalize(decode(window.location.pathname))===normalize(payload.url_path)){window.location.reload();}};})();</script>"#;
 
 pub fn run(root: &Path, host: &str, port: u16) -> Result<()> {
     let mut session = DevSession::new(root)?;
@@ -381,7 +382,9 @@ fn classify_changes(config: &ResolvedConfig, changes: &[SourceChange]) -> Change
             ChangePlan::FullReload => return ChangePlan::FullReload,
             ChangePlan::Targeted(found) => {
                 for target in found {
-                    targets.insert(target.url_path.clone(), target);
+                    // keyed by source: different files can share a URL
+                    // (`pages/docs.hbs` and `pages/docs/index.hbs`)
+                    targets.insert(target.source_path.clone(), target);
                 }
             }
         }
@@ -411,34 +414,39 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
         return ChangePlan::FullReload;
     }
 
-    if let Ok(relative_path) = change.path.strip_prefix(&config.pages_directory) {
-        if relative_path.components().count() == 1 && is_supported_page_file(&change.path) {
-            let Some(page) = static_page_entry_from_source(config, &change.path) else {
-                return ChangePlan::None;
-            };
-            if change.path.file_stem().is_some_and(|stem| stem == "404") {
-                // the 404 page is shown for arbitrary missing URLs, so a targeted reload can't reach it
-                return ChangePlan::FullReload;
-            }
-            return ChangePlan::Targeted(vec![TargetedChange {
-                kind: TargetKind::StaticPage,
-                source_path: change.path.clone(),
-                output_path: page.output_path,
-                url_path: page.url_path,
-                change_type: change.change_type.clone(),
-            }]);
-        }
-
-        let mut components = relative_path.components();
-        let is_details_template = components.next().is_some()
-            && matches!(
-                components.next().map(|component| component.as_os_str().to_string_lossy()),
-                Some(name) if name == "details.hbs"
-            )
-            && components.next().is_none();
-        if is_details_template || relative_path.components().count() > 1 {
+    if is_under(&change.path, &config.pages_directory) {
+        if is_page_template(config, &change.path) {
             return ChangePlan::FullReload;
         }
+        if !is_supported_page_file(&change.path) {
+            return ChangePlan::None;
+        }
+        // Another page writes the same file and still needs it after this one is
+        // deleted. Other changes re-run discovery, which reports the conflict.
+        if change.change_type == ChangeType::Deleted
+            && conflicting_static_page(config, &change.path).is_some()
+        {
+            return ChangePlan::FullReload;
+        }
+        // A static page shadowing a collection item changes which of the two
+        // owns the output file, so rebuild everything to settle it.
+        if collection_item_for_static_page(config, &change.path).is_some() {
+            return ChangePlan::FullReload;
+        }
+        let Some(page) = static_page_entry_from_source(config, &change.path) else {
+            return ChangePlan::None;
+        };
+        if page.output_path == config.output_directory.join(NOT_FOUND_PAGE) {
+            // the 404 page is shown for arbitrary missing URLs, so a targeted reload can't reach it
+            return ChangePlan::FullReload;
+        }
+        return ChangePlan::Targeted(vec![TargetedChange {
+            kind: TargetKind::StaticPage,
+            source_path: change.path.clone(),
+            output_path: page.output_path,
+            url_path: page.url_path,
+            change_type: change.change_type.clone(),
+        }]);
     }
 
     if let Ok(relative_path) = change.path.strip_prefix(&config.content_directory) {
@@ -461,22 +469,6 @@ fn classify_change(config: &ResolvedConfig, change: &SourceChange) -> ChangePlan
     }
 
     ChangePlan::None
-}
-
-/// Removes the now-empty directories between `path` and `root` (exclusive).
-fn remove_empty_parents(path: &Path, root: &Path) -> std::io::Result<()> {
-    let mut directory = path.parent();
-    while let Some(current) = directory {
-        if current == root || !current.starts_with(root) || !current.is_dir() {
-            break;
-        }
-        if fs::read_dir(current)?.next().is_some() {
-            break;
-        }
-        fs::remove_dir(current)?;
-        directory = current.parent();
-    }
-    Ok(())
 }
 
 fn is_under(path: &Path, root: &Path) -> bool {
@@ -1187,6 +1179,254 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_nested_static_page_change() {
+        let (_temp_dir, config) = setup_dev_project();
+        let source_path = config
+            .pages_directory
+            .join("docs")
+            .join("getting-started.hbs");
+        let change = SourceChange {
+            path: source_path.clone(),
+            change_type: ChangeType::Created,
+            is_dir: false,
+        };
+
+        assert_eq!(
+            classify_changes(&config, &[change]),
+            ChangePlan::Targeted(vec![TargetedChange {
+                kind: TargetKind::StaticPage,
+                source_path,
+                output_path: config
+                    .output_directory
+                    .join("docs")
+                    .join("getting-started.html"),
+                url_path: "/docs/getting-started".to_string(),
+                change_type: ChangeType::Created,
+            }])
+        );
+    }
+
+    #[test]
+    fn test_classify_nested_index_change() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.pages_directory.join("docs").join("index.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        let ChangePlan::Targeted(targets) = classify_changes(&config, &[change]) else {
+            panic!("expected targeted change");
+        };
+        assert_eq!(targets[0].url_path, "/docs");
+        assert_eq!(
+            targets[0].output_path,
+            config.output_directory.join("docs.html")
+        );
+    }
+
+    #[test]
+    fn test_classify_collection_template_change_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        fs::create_dir_all(config.content_directory.join("posts")).unwrap();
+        let change = SourceChange {
+            path: config.pages_directory.join("posts").join("details.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_classify_details_page_without_collection_as_static_page() {
+        let (_temp_dir, config) = setup_dev_project();
+        let change = SourceChange {
+            path: config.pages_directory.join("product").join("details.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        let ChangePlan::Targeted(targets) = classify_changes(&config, &[change]) else {
+            panic!("expected targeted change");
+        };
+        assert_eq!(targets[0].kind, TargetKind::StaticPage);
+        assert_eq!(targets[0].url_path, "/product/details");
+    }
+
+    #[test]
+    fn test_remove_output_for_deleted_nested_source_prunes_empty_dirs() {
+        let (_temp_dir, config) = setup_dev_project();
+        let nested_output_dir = config.output_directory.join("docs").join("guides");
+        fs::create_dir_all(&nested_output_dir).unwrap();
+        let output_path = nested_output_dir.join("intro.html");
+        fs::write(&output_path, "<h1>Intro</h1>").unwrap();
+        fs::write(config.output_directory.join("index.html"), "<h1>Home</h1>").unwrap();
+
+        let removed = remove_output_for_source(
+            &config,
+            &config.pages_directory.join("docs/guides/intro.hbs"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(removed, output_path);
+        assert!(!config.output_directory.join("docs").exists());
+        assert!(config.output_directory.join("index.html").exists());
+    }
+
+    #[test]
+    fn test_remove_output_for_deleted_nested_source_keeps_non_empty_dirs() {
+        let (_temp_dir, config) = setup_dev_project();
+        let docs_output_dir = config.output_directory.join("docs");
+        fs::create_dir_all(&docs_output_dir).unwrap();
+        fs::write(docs_output_dir.join("intro.html"), "<h1>Intro</h1>").unwrap();
+        fs::write(docs_output_dir.join("index.html"), "<h1>Docs</h1>").unwrap();
+
+        remove_output_for_source(&config, &config.pages_directory.join("docs/intro.hbs"))
+            .unwrap()
+            .unwrap();
+
+        assert!(!docs_output_dir.join("intro.html").exists());
+        assert!(docs_output_dir.join("index.html").exists());
+    }
+
+    fn setup_shadowed_collection(config: &ResolvedConfig) {
+        fs::create_dir_all(config.pages_directory.join("posts")).unwrap();
+        fs::create_dir_all(config.content_directory.join("posts")).unwrap();
+        fs::write(
+            config.pages_directory.join("posts/details.hbs"),
+            "{{{content}}}",
+        )
+        .unwrap();
+        fs::write(
+            config.pages_directory.join("posts/hello.hbs"),
+            "<h1>Hello</h1>",
+        )
+        .unwrap();
+        fs::write(config.content_directory.join("posts/hello.md"), "Body").unwrap();
+    }
+
+    #[test]
+    fn test_classify_static_page_shadowing_collection_item_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        setup_shadowed_collection(&config);
+        let change = SourceChange {
+            path: config.pages_directory.join("posts/hello.hbs"),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::FullReload);
+    }
+
+    #[test]
+    fn test_shadowed_collection_item_changes_leave_static_output_alone() {
+        let (_temp_dir, config) = setup_dev_project();
+        setup_shadowed_collection(&config);
+        let item = config.content_directory.join("posts/hello.md");
+        let static_output = config.output_directory.join("posts/hello.html");
+        fs::create_dir_all(static_output.parent().unwrap()).unwrap();
+        fs::write(&static_output, "<h1>Hello</h1>").unwrap();
+
+        let change = SourceChange {
+            path: item.clone(),
+            change_type: ChangeType::Modified,
+            is_dir: false,
+        };
+        assert_eq!(classify_changes(&config, &[change]), ChangePlan::None);
+
+        assert_eq!(remove_output_for_source(&config, &item).unwrap(), None);
+        assert!(static_output.exists());
+    }
+
+    #[test]
+    fn test_inject_dev_scripts_normalizes_html_urls() {
+        let (_temp_dir, config) = setup_dev_project();
+        let injected = inject_dev_scripts("<html><body></body></html>", &config, None);
+        assert!(injected.contains(r#".replace(/\.html$/,"").replace(/\/index$/,"/")"#));
+    }
+
+    #[test]
+    fn test_inject_dev_scripts_decodes_percent_encoded_urls() {
+        let (_temp_dir, config) = setup_dev_project();
+        let injected = inject_dev_scripts("<html><body></body></html>", &config, None);
+        // the payload's `url_path` is already decoded; only the browser path is
+        assert!(
+            injected.contains(
+                "normalize(decode(window.location.pathname))===normalize(payload.url_path)"
+            )
+        );
+        // per segment, so reserved characters like `%23` (`#`) are decoded too
+        assert!(injected.contains("decodeURIComponent(segment)"));
+        assert!(injected.contains("catch{return segment;}"));
+    }
+
+    #[test]
+    fn test_conflicting_static_page_keeps_dotted_folder_names() {
+        let (_temp_dir, config) = setup_dev_project();
+        let folder = config.pages_directory.join("v1.2");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(config.pages_directory.join("v1.2.hbs"), "page").unwrap();
+        fs::write(config.pages_directory.join("v1.hbs"), "other").unwrap();
+
+        assert_eq!(
+            conflicting_static_page(&config, &folder.join("index.hbs")),
+            Some(config.pages_directory.join("v1.2.hbs"))
+        );
+        assert_eq!(
+            conflicting_static_page(&config, &config.pages_directory.join("v1.2.hbs")),
+            None
+        );
+        fs::write(folder.join("index.html"), "index").unwrap();
+        assert_eq!(
+            conflicting_static_page(&config, &config.pages_directory.join("v1.2.hbs")),
+            Some(folder.join("index.html"))
+        );
+    }
+
+    #[test]
+    fn test_classify_page_sharing_output_with_sibling_as_full_reload() {
+        let (_temp_dir, config) = setup_dev_project();
+        let docs = config.pages_directory.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("intro.html"), "<h1>Intro</h1>").unwrap();
+        fs::write(config.pages_directory.join("docs.hbs"), "<h1>Docs</h1>").unwrap();
+        // `guides/index/index.hbs` is `/guides/index`, not `/guides`
+        let guides = config.pages_directory.join("guides");
+        fs::create_dir_all(guides.join("index")).unwrap();
+        fs::write(guides.join("index/index.hbs"), "<h1>Index</h1>").unwrap();
+        // with extensionless urls, `index/index.hbs` and `index.hbs` both write `index.html`
+        fs::write(config.pages_directory.join("index.hbs"), "<h1>Home</h1>").unwrap();
+
+        for (path, change_type, expected_full) in [
+            (docs.join("intro.hbs"), ChangeType::Deleted, true),
+            (docs.join("index.hbs"), ChangeType::Deleted, true),
+            (docs.join("intro.hbs"), ChangeType::Created, false),
+            (guides.join("index.hbs"), ChangeType::Deleted, false),
+            (guides.join("index/index.hbs"), ChangeType::Deleted, false),
+            (
+                config.pages_directory.join("index/index.hbs"),
+                ChangeType::Deleted,
+                true,
+            ),
+        ] {
+            let change = SourceChange {
+                path: path.clone(),
+                change_type,
+                is_dir: false,
+            };
+            let plan = classify_changes(&config, &[change]);
+            assert_eq!(
+                plan == ChangePlan::FullReload,
+                expected_full,
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn test_inject_dev_scripts_includes_balzac_client() {
         let (_temp_dir, config) = setup_dev_project();
         let injected = inject_dev_scripts("<html><body><h1>Hi</h1></body></html>", &config, None);
@@ -1412,6 +1652,60 @@ content_directory = "./content"
             fs::read_to_string(root.join("dist/about.html")).unwrap(),
             "<h1>About v2</h1>"
         );
+    }
+
+    #[test]
+    fn test_process_changes_renders_new_nested_page() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::write(
+            root.join("balzac.toml"),
+            r#"
+output_directory = "./dist"
+pages_directory = "./pages"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
+
+        let mut session = DevSession::new(root).unwrap();
+
+        fs::create_dir_all(root.join("pages/docs/guides")).unwrap();
+        fs::write(root.join("pages/docs/guides/setup.hbs"), "<h1>Setup</h1>").unwrap();
+        let messages = session
+            .process_changes(&[SourceChange {
+                path: root.join("pages/docs/guides/setup.hbs"),
+                change_type: ChangeType::Created,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert_eq!(
+            messages,
+            vec![ReloadMessage::targeted("/docs/guides/setup")]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("dist/docs/guides/setup.html")).unwrap(),
+            "<h1>Setup</h1>"
+        );
+
+        fs::remove_file(root.join("pages/docs/guides/setup.hbs")).unwrap();
+        let messages = session
+            .process_changes(&[SourceChange {
+                path: root.join("pages/docs/guides/setup.hbs"),
+                change_type: ChangeType::Deleted,
+                is_dir: false,
+            }])
+            .unwrap();
+
+        assert_eq!(
+            messages,
+            vec![ReloadMessage::targeted("/docs/guides/setup")]
+        );
+        assert!(!root.join("dist/docs").exists());
+        assert!(root.join("dist/index.html").exists());
     }
 
     #[test]
@@ -1970,7 +2264,10 @@ partials_directory = "./partials"
 
     #[test]
     fn test_classify_listing_template_change_as_full_reload() {
-        let (_temp_dir, config) = setup_dev_project();
+        let (_temp_dir, mut config) = setup_dev_project();
+        config
+            .taxonomies
+            .insert("tags".to_string(), crate::config::TaxonomyConfig::default());
         let change = SourceChange {
             path: config.pages_directory.join("tags").join("term.hbs"),
             change_type: ChangeType::Modified,

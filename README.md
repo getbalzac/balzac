@@ -72,7 +72,7 @@ balzac dev --root ./my-site
 
 Current behavior:
 
-- direct changes to top-level files in `pages/` trigger a targeted rebuild and reload only for that page
+- direct changes to page files in `pages/` (including nested ones like `pages/docs/intro.hbs`) trigger a targeted rebuild and reload only for that page, after checking the site for output conflicts; deleting a page removes its output and any output folders left empty. A full rebuild runs instead for the 404 page, a page that [shadows a collection item](#collections), and a deleted page whose output another page still writes (e.g. deleting `pages/docs/intro.hbs` while `pages/docs/intro.html` remains)
 - direct changes to markdown files in `content/<collection>/` re-render all pages (any page can list collection items through `collections`), including listing and taxonomy pages, and trigger a full-page reload, without recreating the output directory; listing pages that are no longer generated (e.g. a tag with no posts left) are removed
 - changes to shared files such as `partials/`, `layouts/`, `assets/`, `balzac.toml`, or collection `details.hbs` trigger a full rebuild and full-page reload
 - hooks are ignored in dev mode
@@ -89,6 +89,27 @@ Balzac supports different directories that you are free to create or skip:
 - pages_directory (required): directory that stores all the handlebars templates that will be used to create pages
 - partials_directory (optional): houses all handlebars partials
 - layouts_directory (optional): houses all handlebars layouts
+
+### Static Pages
+
+Every `.hbs`, `.handlebars` or `.html` file in the pages directory becomes a page. Subdirectories are walked recursively and mirrored in the URL, and `index` files map to their folder's URL. Where each page is written depends on [`url_style`](#url-style):
+
+| Source                           | URL                     | `extensionless` output           | `directory` output                     |
+| -------------------------------- | ----------------------- | -------------------------------- | -------------------------------------- |
+| `pages/index.hbs`                | `/`                     | `dist/index.html`                | `dist/index.html`                      |
+| `pages/about.hbs`                | `/about`                | `dist/about.html`                | `dist/about/index.html`                |
+| `pages/docs/index.hbs`           | `/docs`                 | `dist/docs.html`                 | `dist/docs/index.html`                 |
+| `pages/docs/getting-started.hbs` | `/docs/getting-started` | `dist/docs/getting-started.html` | `dist/docs/getting-started/index.html` |
+
+With `directory`, URLs end with a slash (`/docs/`).
+
+Some files in a subfolder are templates rather than pages, but only when the feature that uses them is set up. Otherwise they're rendered as regular pages (e.g. `pages/archive/list.hbs` at `/archive/list`):
+
+- `pages/<collection>/details.hbs` when a matching `content/<collection>` directory exists (see [Collections](#collections))
+- `pages/<collection>/list.hbs` when `[listings.<collection>]` is configured
+- `pages/<taxonomy>/term.hbs` and `pages/<taxonomy>/taxonomy.hbs` when `[taxonomies.<taxonomy>]` is configured
+
+The build fails if two page files would write the same file, e.g. `pages/docs/intro.hbs` and `pages/docs/intro.html`, or `pages/docs.hbs` and `pages/docs/index.hbs` (both are `/docs`). The same goes for a static page and a generated listing or taxonomy page, e.g. `pages/posts.hbs` and the first page of `[listings.posts]` with `url_style = "directory"`. Only the page at `/404`, `pages/404.hbs` (or `.html`/`.handlebars`) or `pages/404/index.hbs`, is the [404 page](#404-page) and left out of the sitemap; `pages/docs/404.hbs` is a regular page.
 
 
 
@@ -125,7 +146,7 @@ url_style = "directory"
 - `extensionless` needs a host that serves `about.html` for `/about` (Netlify, Vercel, Cloudflare Pages).
 - `directory` works on any static host (S3, GitHub Pages, nginx defaults).
 - `pages/index.hbs` is always written to `dist/index.html` and served at `/`.
-- With `directory`, a top-level `pages/404.hbs` stays at `dist/404.html` so hosts can find the error page.
+- With `directory`, the 404 page stays at `dist/404.html` so hosts can find the error page.
 - With `directory`, `balzac dev` redirects `/about` to `/about/`, as static hosts do.
 - [Listing](#listings-and-pagination) and [taxonomy](#taxonomies) pages (`/posts/`, `/posts/page/2/`, `/tags/rust/`) are always directory-style, written to `<url>/index.html`, whatever the `url_style`. Only the item URLs they link to (`pagination.items`, `collections`) follow `url_style`.
 - With `directory`, a top-level page named like a listing (`pages/posts.hbs` with `[listings.posts]`, or `pages/tags.hbs` with a `tags/taxonomy.hbs` index) would write the same `index.html`, so the build fails.
@@ -155,7 +176,7 @@ Templates using `{{vite_url "main.js"}}` will resolve to the Vite dev server in 
 
 ## 404 Page
 
-Create `pages/404.hbs` (or `.html`/`.handlebars`) and it is rendered to `dist/404.html` like any other page. Most static hosts (GitHub Pages, Netlify, Cloudflare Pages, ...) serve this file automatically for missing paths. The 404 page is always left out of the sitemap, and `balzac dev` serves it with a `404` status for any path that doesn't exist.
+Create `pages/404.hbs` (or `.html`/`.handlebars`, or `pages/404/index.hbs`) and it is rendered to `dist/404.html` like any other page. Most static hosts (GitHub Pages, Netlify, Cloudflare Pages, ...) serve this file automatically for missing paths. The 404 page is always left out of the sitemap, and `balzac dev` serves it with a `404` status for any path that doesn't exist.
 
 ## robots.txt
 
@@ -288,6 +309,8 @@ build_after = "rsync -av dist/ production/"
 To use a collection, create a subfolder in the content_directory folder with the name of your collection (i.e. posts) and put your markdown files in there.
 
 The next step is to create a file in the pages_directory called <name_of_your_collection>/details.hbs (i.e. posts/details.hbs).
+
+Other pages in that folder are still rendered as static pages, so `pages/posts/index.hbs` can serve as a listing page at `/posts`. If a static page and a collection item would render to the same file (e.g. `pages/posts/hello.hbs` and `content/posts/hello.md`), the static page wins and Balzac logs a warning.
 
 ### Frontmatter
 

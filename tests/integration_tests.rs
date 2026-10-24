@@ -8,7 +8,7 @@ use tempfile::TempDir;
 // Import from the main crate
 use balzac::config::{
     CombinedFeedConfig, CombinedFeedSetting, Config, FeedConfig, FeedFormat, FeedOverride,
-    RobotsConfig, SitemapConfig, UrlStyle,
+    ListingConfig, RobotsConfig, SitemapConfig, TaxonomyConfig, UrlStyle,
 };
 use balzac::listing::render_listing_pages;
 use balzac::{
@@ -2370,4 +2370,423 @@ fn test_feed_full_content_uses_custom_tag_templates() {
         ),
         "feed content should be rendered through custom tag templates: {atom}"
     );
+}
+
+/// Builds a resolved config rooted at `temp_path` using the default directory layout
+fn nested_pages_config(
+    temp_path: &std::path::Path,
+    base_url: Option<&str>,
+) -> balzac::config::ResolvedConfig {
+    Config {
+        base_url: base_url.map(str::to_string),
+        sitemap: base_url.map(|_| SitemapConfig::default()),
+        ..Config::default()
+    }
+    .resolve(temp_path)
+}
+
+/// Runs discovery, rendering and sitemap generation like `balzac build`
+fn build_full_site(resolved_config: &balzac::config::ResolvedConfig) -> SitePages {
+    make_dist_folder(resolved_config).expect("Failed to make dist folder");
+    let site_pages = discover_site_pages(resolved_config).expect("Failed to discover pages");
+
+    let mut renderer = HandlebarsRenderer::new(resolved_config);
+    renderer
+        .init(resolved_config)
+        .expect("Failed to init renderer");
+    render_pages(resolved_config, site_pages.all(), &renderer).expect("Failed to render pages");
+    render_collection_items(resolved_config, site_pages.all(), &renderer)
+        .expect("Failed to render collections");
+    write_sitemap(resolved_config, &site_pages).expect("Failed to write sitemap");
+
+    site_pages
+}
+
+#[test]
+fn test_nested_static_pages_are_rendered() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs/guides")).expect("Failed to create nested dirs");
+    fs::write(pages_dir.join("index.hbs"), "<h1>Home</h1>").expect("Failed to write index");
+    fs::write(pages_dir.join("docs/index.hbs"), "<h1>Docs</h1>").expect("Failed to write docs");
+    fs::write(
+        pages_dir.join("docs/getting-started.hbs"),
+        "<h1>Getting Started</h1>",
+    )
+    .expect("Failed to write getting started");
+    fs::write(pages_dir.join("docs/guides/setup.html"), "<h1>Setup</h1>")
+        .expect("Failed to write setup");
+    fs::write(pages_dir.join("docs/notes.txt"), "not a page").expect("Failed to write notes");
+
+    let resolved_config = nested_pages_config(&temp_path, None);
+    let site_pages = build_full_site(&resolved_config);
+
+    let mut url_paths: Vec<&str> = site_pages
+        .static_pages()
+        .iter()
+        .map(|page| page.url_path.as_str())
+        .collect();
+    url_paths.sort_unstable();
+    assert_eq!(
+        url_paths,
+        vec!["/", "/docs", "/docs/getting-started", "/docs/guides/setup"]
+    );
+
+    let read = |path: &str| fs::read_to_string(output_dir.join(path)).unwrap_or_default();
+    assert_eq!(read("index.html"), "<h1>Home</h1>");
+    assert_eq!(read("docs.html"), "<h1>Docs</h1>");
+    assert_eq!(
+        read("docs/getting-started.html"),
+        "<h1>Getting Started</h1>"
+    );
+    assert_eq!(read("docs/guides/setup.html"), "<h1>Setup</h1>");
+    assert!(!output_dir.join("docs/notes.html").exists());
+}
+
+#[test]
+fn test_collection_template_is_not_rendered_as_static_page() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("blog")).expect("Failed to create blog pages dir");
+    fs::create_dir_all(content_dir.join("blog")).expect("Failed to create blog content dir");
+    fs::write(
+        pages_dir.join("blog/details.hbs"),
+        "<article>{{fm.title}}</article>",
+    )
+    .expect("Failed to write details template");
+    fs::write(pages_dir.join("blog/index.hbs"), "<h1>Blog</h1>")
+        .expect("Failed to write blog index");
+    fs::write(
+        content_dir.join("blog/hello.md"),
+        "---\ntitle: Hello\n---\n\nHi",
+    )
+    .expect("Failed to write post");
+
+    let resolved_config = nested_pages_config(&temp_path, None);
+    let site_pages = build_full_site(&resolved_config);
+
+    let static_urls: Vec<&str> = site_pages
+        .static_pages()
+        .iter()
+        .map(|page| page.url_path.as_str())
+        .collect();
+    assert_eq!(static_urls, vec!["/blog"]);
+    assert!(!output_dir.join("blog/details.html").exists());
+    assert_eq!(
+        fs::read_to_string(output_dir.join("blog.html")).unwrap(),
+        "<h1>Blog</h1>"
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("blog/hello.html")).unwrap(),
+        "<article>Hello</article>"
+    );
+}
+
+#[test]
+fn test_details_page_without_collection_is_static_page() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("product")).expect("Failed to create product dir");
+    fs::write(pages_dir.join("product/details.hbs"), "<h1>Specs</h1>")
+        .expect("Failed to write product details");
+
+    let resolved_config = nested_pages_config(&temp_path, None);
+    build_full_site(&resolved_config);
+
+    assert_eq!(
+        fs::read_to_string(output_dir.join("product/details.html")).unwrap(),
+        "<h1>Specs</h1>"
+    );
+}
+
+#[test]
+fn test_sitemap_includes_nested_static_pages() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs")).expect("Failed to create docs dir");
+    fs::create_dir_all(pages_dir.join("blog")).expect("Failed to create blog pages dir");
+    fs::create_dir_all(content_dir.join("blog")).expect("Failed to create blog content dir");
+    fs::write(pages_dir.join("docs/index.hbs"), "<h1>Docs</h1>").expect("Failed to write docs");
+    fs::write(pages_dir.join("docs/install.hbs"), "<h1>Install</h1>")
+        .expect("Failed to write install");
+    fs::write(pages_dir.join("blog/details.hbs"), "{{{content}}}")
+        .expect("Failed to write details template");
+    fs::write(
+        content_dir.join("blog/post.md"),
+        "---\ntitle: Post\n---\n\nBody",
+    )
+    .expect("Failed to write post");
+
+    let resolved_config = nested_pages_config(&temp_path, Some("https://example.com"));
+    build_full_site(&resolved_config);
+
+    let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("Missing sitemap");
+    assert!(sitemap.contains("<loc>https://example.com/docs</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/docs/install</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/blog/post</loc>"));
+    assert!(!sitemap.contains("/blog/details"));
+}
+
+#[test]
+fn test_static_page_wins_over_collection_item_with_same_output() {
+    for url_style in [UrlStyle::Extensionless, UrlStyle::Directory] {
+        let (_temp, temp_path, pages_dir, _, _, _, _, content_dir) = setup_test_project();
+
+        fs::create_dir_all(pages_dir.join("posts")).expect("Failed to create posts pages dir");
+        fs::create_dir_all(content_dir.join("posts")).expect("Failed to create posts content dir");
+        fs::write(
+            pages_dir.join("posts/details.hbs"),
+            "<article>{{fm.title}}</article>",
+        )
+        .expect("Failed to write details template");
+        fs::write(pages_dir.join("posts/hello.hbs"), "<h1>Static hello</h1>")
+            .expect("Failed to write static page");
+        fs::write(
+            content_dir.join("posts/hello.md"),
+            "---\ntitle: Hello\n---\n\nBody",
+        )
+        .expect("Failed to write hello post");
+        fs::write(
+            content_dir.join("posts/world.md"),
+            "---\ntitle: World\n---\n\nBody",
+        )
+        .expect("Failed to write world post");
+
+        let resolved_config = Config {
+            url_style,
+            ..Config::default()
+        }
+        .resolve(&temp_path);
+        let site_pages = build_full_site(&resolved_config);
+
+        let collection_urls: Vec<&str> = site_pages
+            .collection_items()
+            .iter()
+            .map(|page| page.url_path.as_str())
+            .collect();
+        assert_eq!(collection_urls.len(), 1, "{url_style:?}");
+        assert!(collection_urls[0].starts_with("/posts/world"));
+
+        let hello = &site_pages.static_pages()[0].output_path;
+        assert_eq!(
+            fs::read_to_string(hello).unwrap(),
+            "<h1>Static hello</h1>",
+            "{url_style:?}"
+        );
+        assert!(
+            balzac::collection_output_path_from_source(
+                &resolved_config,
+                &content_dir.join("posts/hello.md")
+            )
+            .is_none(),
+            "Shadowed collection item should not own an output path"
+        );
+    }
+}
+
+#[test]
+fn test_nested_pages_with_directory_url_style() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs")).expect("Failed to create docs dir");
+    fs::write(pages_dir.join("docs/index.hbs"), "<h1>Docs</h1>").expect("Failed to write docs");
+    fs::write(pages_dir.join("docs/install.hbs"), "<h1>Install</h1>")
+        .expect("Failed to write install");
+    fs::write(pages_dir.join("docs/404.hbs"), "<h1>Docs 404</h1>")
+        .expect("Failed to write nested 404");
+
+    let resolved_config = Config {
+        url_style: UrlStyle::Directory,
+        ..Config::default()
+    }
+    .resolve(&temp_path);
+    let site_pages = build_full_site(&resolved_config);
+
+    let mut url_paths: Vec<&str> = site_pages
+        .static_pages()
+        .iter()
+        .map(|page| page.url_path.as_str())
+        .collect();
+    url_paths.sort_unstable();
+    assert_eq!(url_paths, vec!["/docs/", "/docs/404/", "/docs/install/"]);
+
+    let read = |path: &str| fs::read_to_string(output_dir.join(path)).unwrap_or_default();
+    assert_eq!(read("docs/index.html"), "<h1>Docs</h1>");
+    assert_eq!(read("docs/install/index.html"), "<h1>Install</h1>");
+    // only a top-level 404 page is the site's error page
+    assert_eq!(read("docs/404/index.html"), "<h1>Docs 404</h1>");
+    assert!(!output_dir.join("404.html").exists());
+}
+
+#[test]
+fn test_dotted_collection_item_does_not_replace_static_page() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("posts")).expect("Failed to create posts pages dir");
+    fs::create_dir_all(content_dir.join("posts")).expect("Failed to create posts content dir");
+    fs::write(
+        pages_dir.join("posts/details.hbs"),
+        "<article>{{fm.title}}</article>",
+    )
+    .expect("Failed to write details template");
+    fs::write(pages_dir.join("posts/v1.hbs"), "<h1>Version 1</h1>")
+        .expect("Failed to write static page");
+    fs::write(
+        content_dir.join("posts/v1.2.md"),
+        "---\ntitle: Release 1.2\n---\n\nBody",
+    )
+    .expect("Failed to write dotted post");
+
+    let resolved_config = nested_pages_config(&temp_path, None);
+    let site_pages = build_full_site(&resolved_config);
+
+    let item = site_pages.collection_items()[0];
+    assert_eq!(item.url_path, "/posts/v1.2");
+    assert_eq!(item.output_path, output_dir.join("posts/v1.2.html"));
+    assert_eq!(
+        fs::read_to_string(output_dir.join("posts/v1.html")).unwrap(),
+        "<h1>Version 1</h1>"
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("posts/v1.2.html")).unwrap(),
+        "<article>Release 1.2</article>"
+    );
+}
+
+#[test]
+fn test_listing_templates_are_not_rendered_as_static_pages() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, content_dir) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("posts")).expect("Failed to create posts pages dir");
+    fs::create_dir_all(pages_dir.join("tags")).expect("Failed to create tags pages dir");
+    fs::create_dir_all(pages_dir.join("archive")).expect("Failed to create archive pages dir");
+    fs::create_dir_all(content_dir.join("posts")).expect("Failed to create posts content dir");
+    fs::write(pages_dir.join("posts/details.hbs"), "{{fm.title}}")
+        .expect("Failed to write details template");
+    fs::write(pages_dir.join("posts/list.hbs"), "list").expect("Failed to write list");
+    fs::write(pages_dir.join("tags/term.hbs"), "term").expect("Failed to write term");
+    fs::write(pages_dir.join("tags/taxonomy.hbs"), "taxonomy").expect("Failed to write taxonomy");
+    // no `[listings.archive]`, so this is a regular page
+    fs::write(pages_dir.join("archive/list.hbs"), "archive").expect("Failed to write archive");
+    fs::write(
+        content_dir.join("posts/hello.md"),
+        "---\ntitle: Hello\ntags: [rust]\n---\n\nBody",
+    )
+    .expect("Failed to write post");
+
+    let mut config = Config::default();
+    config
+        .listings
+        .insert("posts".to_string(), ListingConfig::default());
+    config
+        .taxonomies
+        .insert("tags".to_string(), TaxonomyConfig::default());
+    let resolved_config = config.resolve(&temp_path);
+    let site_pages = build_full_site(&resolved_config);
+
+    let static_urls: Vec<&str> = site_pages
+        .static_pages()
+        .iter()
+        .map(|page| page.url_path.as_str())
+        .collect();
+    assert_eq!(static_urls, vec!["/archive/list"]);
+    assert!(!output_dir.join("posts/list.html").exists());
+    assert!(!output_dir.join("tags/term.html").exists());
+    assert!(!output_dir.join("tags/taxonomy.html").exists());
+    assert_eq!(
+        fs::read_to_string(output_dir.join("archive/list.html")).unwrap(),
+        "archive"
+    );
+}
+
+#[test]
+fn test_static_page_conflicting_with_listing_fails_discovery() {
+    let (_temp, temp_path, pages_dir, _, _, _, _, content_dir) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("posts")).expect("Failed to create posts pages dir");
+    fs::create_dir_all(content_dir.join("posts")).expect("Failed to create posts content dir");
+    fs::write(pages_dir.join("posts/details.hbs"), "{{fm.title}}")
+        .expect("Failed to write details template");
+    fs::write(pages_dir.join("posts/list.hbs"), "list").expect("Failed to write list");
+    // in directory style both are written to `posts/index.html`
+    fs::write(pages_dir.join("posts/index.hbs"), "static").expect("Failed to write index");
+    fs::write(
+        content_dir.join("posts/hello.md"),
+        "---\ntitle: Hello\n---\n",
+    )
+    .expect("Failed to write post");
+
+    let mut config = Config {
+        url_style: UrlStyle::Directory,
+        ..Config::default()
+    };
+    config
+        .listings
+        .insert("posts".to_string(), ListingConfig::default());
+    let resolved_config = config.resolve(&temp_path);
+
+    let error = discover_site_pages(&resolved_config).expect_err("pages should conflict");
+    assert!(error.to_string().contains("posts/index.html"), "{error}");
+}
+
+#[test]
+fn test_only_top_level_404_page_is_excluded_from_sitemap() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs")).expect("Failed to create docs dir");
+    fs::write(pages_dir.join("404.hbs"), "<h1>Lost</h1>").expect("Failed to write 404");
+    fs::write(pages_dir.join("docs/404.hbs"), "<h1>Error codes</h1>")
+        .expect("Failed to write nested 404");
+
+    let resolved_config = nested_pages_config(&temp_path, Some("https://example.com"));
+    build_full_site(&resolved_config);
+
+    let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("Missing sitemap");
+    assert!(!sitemap.contains("<loc>https://example.com/404</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/docs/404</loc>"));
+}
+
+#[test]
+fn test_pages_writing_the_same_output_fail_discovery() {
+    let (_temp, temp_path, pages_dir, _, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs")).expect("Failed to create docs dir");
+    fs::write(pages_dir.join("docs/intro.hbs"), "hbs").expect("Failed to write hbs page");
+    fs::write(pages_dir.join("docs/intro.html"), "html").expect("Failed to write html page");
+
+    let resolved_config = nested_pages_config(&temp_path, None);
+    let error = discover_static_pages(&resolved_config).expect_err("pages should conflict");
+    let message = error.to_string();
+    assert!(
+        message.contains("intro.hbs") && message.contains("intro.html"),
+        "{message}"
+    );
+
+    // `docs.hbs` and `docs/index.hbs` are both `/docs`
+    fs::remove_file(pages_dir.join("docs/intro.html")).expect("Failed to remove html page");
+    fs::write(pages_dir.join("docs.hbs"), "docs").expect("Failed to write docs page");
+    fs::write(pages_dir.join("docs/index.hbs"), "index").expect("Failed to write docs index");
+    let error = discover_static_pages(&resolved_config).expect_err("pages should conflict");
+    let message = error.to_string();
+    assert!(
+        message.contains("docs.hbs") && message.contains("index.hbs"),
+        "{message}"
+    );
+}
+
+#[test]
+fn test_sitemap_encodes_nested_page_urls() {
+    let (_temp, temp_path, pages_dir, output_dir, _, _, _, _) = setup_test_project();
+
+    fs::create_dir_all(pages_dir.join("docs/c#")).expect("Failed to create docs dir");
+    fs::write(pages_dir.join("docs/c#/index.hbs"), "C#").expect("Failed to write page");
+    fs::write(pages_dir.join("docs/café.hbs"), "Café").expect("Failed to write page");
+
+    let resolved_config = nested_pages_config(&temp_path, Some("https://example.com"));
+    build_full_site(&resolved_config);
+
+    assert!(output_dir.join("docs/c#.html").exists());
+    let sitemap = fs::read_to_string(output_dir.join("sitemap.xml")).expect("Missing sitemap");
+    assert!(sitemap.contains("<loc>https://example.com/docs/c%23</loc>"));
+    assert!(sitemap.contains("<loc>https://example.com/docs/caf%C3%A9</loc>"));
 }
