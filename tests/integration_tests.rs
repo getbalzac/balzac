@@ -10,11 +10,46 @@ use balzac::config::{
     CombinedFeedConfig, CombinedFeedSetting, Config, FeedConfig, FeedFormat, FeedOverride,
     ListingConfig, RobotsConfig, SitemapConfig, TaxonomyConfig, UrlStyle,
 };
-use balzac::listing::render_listing_pages;
+use balzac::context::SiteContext;
+use balzac::sitemap::PageEntry;
 use balzac::{
     add_assets, discover_collections, discover_site_pages, discover_static_pages, make_dist_folder,
-    render_collection_items, render_pages, write_feeds, write_robots, write_sitemap,
+    write_feeds, write_robots, write_sitemap,
 };
+
+// The render passes, each with a `SiteContext` of its own, like a build that
+// only runs that pass.
+fn render_pages(
+    config: &balzac::config::ResolvedConfig,
+    pages: &[PageEntry],
+    renderer: &HandlebarsRenderer,
+) -> balzac::error::Result<()> {
+    balzac::render_pages(
+        config,
+        &SiteContext::new(config, pages, renderer)?,
+        renderer,
+    )
+}
+
+fn render_collection_items(
+    config: &balzac::config::ResolvedConfig,
+    pages: &[PageEntry],
+    renderer: &HandlebarsRenderer,
+) -> balzac::error::Result<()> {
+    balzac::render_collection_items(
+        config,
+        &SiteContext::new(config, pages, renderer)?,
+        renderer,
+    )
+}
+
+fn render_listing_pages(
+    config: &balzac::config::ResolvedConfig,
+    pages: &[PageEntry],
+    renderer: &HandlebarsRenderer,
+) -> balzac::error::Result<()> {
+    balzac::listing::render_listing_pages(&SiteContext::new(config, pages, renderer)?, renderer)
+}
 
 /// Helper function to create a temporary project structure
 fn setup_test_project() -> (
@@ -2013,13 +2048,10 @@ fn test_render_static_page_from_path_only_entry() {
 
     let page = balzac::static_page_entry_from_source(&resolved_config, &source)
         .expect("Page should map to an entry");
-    balzac::render_static_page(
-        &resolved_config,
-        &page,
-        &HandlebarsRenderer::new(&resolved_config),
-        &serde_json::json!({}),
-    )
-    .expect("Failed to render page");
+    let renderer = HandlebarsRenderer::new(&resolved_config);
+    let site = SiteContext::new(&resolved_config, &[], &renderer).expect("Failed to build site");
+    balzac::render_static_page(&resolved_config, &page, &renderer, &site)
+        .expect("Failed to render page");
 
     let output = fs::read_to_string(output_dir.join("about.html")).expect("Failed to read output");
     assert_eq!(output, "<h1>About</h1>");
