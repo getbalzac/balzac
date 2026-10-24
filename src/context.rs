@@ -2,34 +2,36 @@ use std::cmp::Ordering;
 
 use crate::config;
 use crate::error::Result;
+use crate::parallel;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageEntry, PageType};
 
+/// The `[global]` data with `local_context` merged over it. Takes the local
+/// context by value: it holds `collections`, which is large, so moving it
+/// avoids a copy per page.
 #[must_use]
 pub fn merge_contexts(
     configuration: &config::ResolvedConfig,
-    local_context: &serde_json::Value,
+    local_context: serde_json::Value,
 ) -> serde_json::Value {
-    let global_value = configuration
+    let mut merged = configuration
         .global
         .as_ref()
         .map(|g| serde_json::to_value(g).unwrap())
         .unwrap_or(serde_json::json!({}));
-
-    let mut merged = global_value;
     merge(&mut merged, local_context);
     merged
 }
 
-fn merge(a: &mut serde_json::Value, b: &serde_json::Value) {
+fn merge(a: &mut serde_json::Value, b: serde_json::Value) {
     if let (serde_json::Value::Object(a_map), serde_json::Value::Object(b_map)) = (a, b) {
         for (key, b_value) in b_map {
-            match a_map.get_mut(key) {
+            match a_map.get_mut(&key) {
                 Some(a_value) if a_value.is_object() && b_value.is_object() => {
                     merge(a_value, b_value);
                 }
                 _ => {
-                    a_map.insert(key.clone(), b_value.clone());
+                    a_map.insert(key, b_value);
                 }
             }
         }
@@ -51,17 +53,19 @@ pub fn build_collections_context(
         .collect();
     items.sort_by(|a, b| compare_collection_items(a, b));
 
-    for page in items {
+    // Rendering the markdown is most of the work; assembling stays in order.
+    let contents = parallel::try_map(&items, |page| match &page.content {
+        Some(raw_content) => render
+            .render_markdown(raw_content)
+            .map_err(|e| e.in_page(&page.source_path)),
+        None => Ok(String::new()),
+    })?;
+
+    for (page, content) in items.into_iter().zip(contents) {
         let PageType::Collection { name } = &page.page_type else {
             continue;
         };
 
-        let content = match &page.content {
-            Some(raw_content) => render
-                .render_markdown(raw_content)
-                .map_err(|e| e.in_page(&page.source_path))?,
-            None => String::new(),
-        };
         let item = serde_json::json!({
             "url": page.url_path,
             "slug": item_slug(page),
@@ -113,6 +117,29 @@ pub fn compare_collection_items(a: &PageEntry, b: &PageEntry) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_merge_contexts_merges_local_over_global() {
+        let config: config::Config = toml::from_str(
+            "[global]\nsite = \"Blog\"\nfm = { author = \"Ada\", title = \"Default\" }\n",
+        )
+        .unwrap();
+        let config = config.resolve(Path::new("."));
+
+        let merged = merge_contexts(
+            &config,
+            serde_json::json!({ "fm": { "title": "Post" }, "content": "<p>hi</p>" }),
+        );
+
+        assert_eq!(
+            merged,
+            serde_json::json!({
+                "site": "Blog",
+                "fm": { "author": "Ada", "title": "Post" },
+                "content": "<p>hi</p>",
+            })
+        );
+    }
     use crate::sitemap::SitemapMeta;
     use std::path::{Path, PathBuf};
 

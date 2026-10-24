@@ -32,6 +32,14 @@ pub struct HandlebarsRenderer<'a> {
     tag_template_paths: HashMap<String, PathBuf>,
 }
 
+// Pages are rendered in parallel with one shared renderer (see `parallel`).
+// Handlebars only accepts `Send + Sync` helpers, and Rhai script helpers are
+// thanks to rhai's `sync` feature, so a helper that isn't fails to compile here.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<HandlebarsRenderer<'static>>();
+};
+
 /// Converts a handlebars parse error of the template at `path`.
 fn template_error(path: &Path, error: &handlebars::TemplateError) -> Error {
     let (line, column) = error.pos().unzip();
@@ -492,8 +500,9 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
         }
     }
     fn render(&self, path: &Path, template: String, data: serde_json::Value) -> Result<String> {
+        // `render_template` would serialize `data` into a copy; wrapping moves it
         self.registry
-            .render_template(&template, &data)
+            .render_template_with_context(&template, &handlebars::Context::from(data))
             .map_err(|e| self.render_error(path, &e))
     }
 
