@@ -42,9 +42,10 @@ The committed `package.json` files stay at version `0.0.0`; versions, binaries,
 3. `publish-npm.yml` downloads the archives built in that run, runs
    `scripts/prepare.mjs <version> target/distrib`, then
    [`scripts/publish.sh`](scripts/publish.sh), which publishes the platform
-   packages first and `balzac` last (so it never points at missing
-   packages). Versions already on npm are skipped, so a failed job can simply
-   be re-run. Prereleases go to the `next` dist-tag.
+   packages first and `balzac` last, once npm has finished processing all of
+   them (so it never points at missing packages). Versions already on npm,
+   or still being processed, are skipped, so a failed job can simply be
+   re-run. Prereleases go to the `next` dist-tag.
 
 npm authenticates the job with
 [trusted publishing](https://docs.npmjs.com/trusted-publishers): GitHub's
