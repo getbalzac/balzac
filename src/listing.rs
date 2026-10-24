@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::config::{ResolvedConfig, TaxonomyConfig};
 use crate::context::{build_collections_context, compare_collection_items, merge_contexts};
 use crate::error::{self, Result};
+use crate::helpers::{ClockReadings, track_clock};
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageEntry, PageType, SitemapMeta};
 
@@ -476,6 +477,19 @@ pub fn render_listing_pages(
     }
 
     let collections = build_collections_context(pages, render)?;
+    render_listings(config, pages, render, &collections)?;
+    Ok(())
+}
+
+/// Renders the listing entries of `pages` with an already built `collections`
+/// context; other entries are skipped. Returns the clock readings of each
+/// page rendered.
+pub fn render_listings<'a>(
+    config: &ResolvedConfig,
+    pages: impl IntoIterator<Item = &'a PageEntry>,
+    render: &HandlebarsRenderer,
+    collections: &Value,
+) -> Result<Vec<(&'a PageEntry, ClockReadings)>> {
     let items: HashMap<&str, &Value> = collections
         .as_object()
         .into_iter()
@@ -485,6 +499,7 @@ pub fn render_listing_pages(
         .filter_map(|item| Some((item["url"].as_str()?, item)))
         .collect();
     let mut templates: HashMap<&Path, String> = HashMap::new();
+    let mut rendered_pages = Vec::new();
 
     for page in pages {
         let PageType::Listing(listing) = &page.page_type else {
@@ -499,19 +514,22 @@ pub fn render_listing_pages(
 
         let mut context = listing.context(&items);
         context["collections"] = collections.clone();
-        let rendered = render.render(
-            &page.source_path,
-            template,
-            merge_contexts(config, &context),
-        )?;
+        let (rendered, clock) = track_clock(|| {
+            render.render(
+                &page.source_path,
+                template,
+                merge_contexts(config, &context),
+            )
+        });
 
         if let Some(parent) = page.output_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&page.output_path, rendered)?;
+        fs::write(&page.output_path, rendered?)?;
+        rendered_pages.push((page, clock));
     }
 
-    Ok(())
+    Ok(rendered_pages)
 }
 
 #[cfg(test)]

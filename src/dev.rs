@@ -143,6 +143,9 @@ impl DevSession {
     /// kept in `build_error` so the server can start and show it.
     fn new(root: &Path) -> Result<Self> {
         let (parsed_config, resolved_config) = load_config(root)?;
+        // dev renders drafts and its own output into the output directory,
+        // which the next `balzac build` must not reuse
+        crate::cache::invalidate(root)?;
         let mut session = Self {
             root: root.to_path_buf(),
             resolved_config,
@@ -170,6 +173,8 @@ impl DevSession {
         if self.build_error.is_some() {
             plan = ChangePlan::FullReload;
         }
+        // in case `balzac build` ran since the server started
+        crate::cache::invalidate(&self.root)?;
         let result = self.apply_with_hook_writes(plan);
         self.record_build(result)
     }
@@ -2486,6 +2491,30 @@ partials_directory = "./partials"
             fs::read_to_string(root.join("dist/about.html")).unwrap(),
             "<body>About v2</body>"
         );
+    }
+
+    #[test]
+    fn test_dev_session_invalidates_build_cache() {
+        let temp_dir = setup_partial_project("<h1>Title</h1>");
+        let root = temp_dir.path();
+        let manifest = root.join(".balzac/cache/build.json");
+        let write_manifest = || {
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(&manifest, "{}").unwrap();
+        };
+
+        // dev writes drafts and its own output, which `balzac build` must not reuse
+        write_manifest();
+        let mut session = DevSession::new(root).unwrap();
+        assert!(!manifest.exists());
+
+        // nor when `balzac build` ran while the server was running
+        write_manifest();
+        fs::write(root.join("pages/index.hbs"), "<body>v2</body>").unwrap();
+        session
+            .process_changes(&[change(root.join("pages/index.hbs"))])
+            .unwrap();
+        assert!(!manifest.exists());
     }
 
     #[test]

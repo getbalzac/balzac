@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod cli;
 pub mod collection;
 pub mod config;
@@ -18,6 +19,7 @@ pub mod url;
 pub mod vite;
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -25,6 +27,7 @@ use std::{
 use crate::{
     context::{build_collections_context, merge_contexts},
     error::{Error, Result},
+    helpers::{ClockReadings, track_clock},
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
     url::{PageLocation, page_location},
@@ -66,6 +69,23 @@ pub fn is_asset_output(parsed_config: &config::ResolvedConfig, output_path: &Pat
 }
 
 pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()> {
+    copy_assets(parsed_config, &mut |source, target| {
+        // Only a rendered page can be here already (e.g. a directory-style
+        // `pages/assets.hbs`), and silently replacing it would lose the page.
+        if fs::exists(target)? {
+            return Err(asset_collision(source, target));
+        }
+        log::debug!("Copying {} to {}", source.display(), target.display());
+        fs::copy(source, target).map(|_| ())
+    })
+}
+
+/// Walks the assets directory, creating its folders in `<output>/assets` and
+/// calling `copy_file` with the source and target of each regular file.
+pub(crate) fn copy_assets(
+    parsed_config: &config::ResolvedConfig,
+    copy_file: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let dir_exists = fs::exists(&parsed_config.assets_directory)?;
 
     if dir_exists {
@@ -79,6 +99,7 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
             &parsed_config.assets_directory,
             &destination,
             &output_directory,
+            copy_file,
         )?;
     } else {
         log::debug!("Assets directory does not exist, skipping");
@@ -87,7 +108,24 @@ pub fn add_assets(parsed_config: &config::ResolvedConfig) -> std::io::Result<()>
     Ok(())
 }
 
-fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
+/// The error for an asset that would replace a rendered page.
+pub(crate) fn asset_collision(source: &Path, target: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "asset {} would overwrite the rendered page at {}",
+            source.display(),
+            target.display()
+        ),
+    )
+}
+
+fn copy_dir_recursive(
+    source: &Path,
+    destination: &Path,
+    excluded: &Path,
+    copy_file: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -98,7 +136,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std
                 log::debug!("Skipping output directory {}", entry.path().display());
                 continue;
             }
-            copy_dir_recursive(&entry.path(), &target, excluded)?;
+            copy_dir_recursive(&entry.path(), &target, excluded, copy_file)?;
             continue;
         }
 
@@ -112,20 +150,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path, excluded: &Path) -> std
             continue;
         }
 
-        // Only a rendered page can be here already (e.g. a directory-style
-        // `pages/assets.hbs`), and silently replacing it would lose the page.
-        if fs::exists(&target)? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "asset {} would overwrite the rendered page at {}",
-                    entry.path().display(),
-                    target.display()
-                ),
-            ));
-        }
-        log::debug!("Copying {} to {}", entry.path().display(), target.display());
-        fs::copy(entry.path(), target)?;
+        copy_file(&entry.path(), &target)?;
     }
     Ok(())
 }
@@ -389,6 +414,76 @@ pub fn render_collection_items(
     Ok(())
 }
 
+/// Pages rendered by [`render_selected_pages`].
+#[derive(Debug, Default)]
+pub struct RenderedPages {
+    /// Output file of each page rendered, with the `{{date "now"}}` calls
+    /// made while rendering it.
+    pub pages: BTreeMap<PathBuf, ClockReadings>,
+    /// The `{{date "now"}}` calls made while building the `collections`
+    /// context (by tag templates), which every page sees; `None` when no page
+    /// was rendered and the context was not built.
+    pub collections: Option<ClockReadings>,
+}
+
+/// Renders the pages for which `selected` returns true: static pages, then
+/// collection items, then listings, like [`render_pages`],
+/// [`render_collection_items`] and [`render_listing_pages`] in turn. The
+/// `collections` context every page sees is built from all `pages`, once, and
+/// only when a page is selected.
+pub fn render_selected_pages(
+    parsed_config: &config::ResolvedConfig,
+    pages: &[PageEntry],
+    render: &HandlebarsRenderer,
+    selected: impl Fn(&PageEntry) -> bool,
+) -> Result<RenderedPages> {
+    let selected: Vec<&PageEntry> = pages.iter().filter(|page| selected(page)).collect();
+    if selected.is_empty() {
+        return Ok(RenderedPages::default());
+    }
+    let (collections, collections_clock) = track_clock(|| build_collections_context(pages, render));
+    let collections = collections?;
+    let mut rendered = RenderedPages {
+        pages: BTreeMap::new(),
+        collections: Some(collections_clock),
+    };
+
+    for page in &selected {
+        if matches!(page.page_type, PageType::Static) {
+            let (result, clock) =
+                track_clock(|| render_static_page(parsed_config, page, render, &collections));
+            result?;
+            rendered.pages.insert(page.output_path.clone(), clock);
+        }
+    }
+    let mut seen_collections = std::collections::HashSet::new();
+    for page in &selected {
+        if let PageType::Collection { name } = &page.page_type {
+            if seen_collections.insert(name) {
+                log::info!("Rendering collection {name}");
+            }
+            let (result, clock) =
+                track_clock(|| render_collection_page(parsed_config, page, render, &collections));
+            result?;
+            rendered.pages.insert(page.output_path.clone(), clock);
+        }
+    }
+    let listings = listing::render_listings(
+        parsed_config,
+        selected
+            .iter()
+            .copied()
+            .filter(|page| matches!(page.page_type, PageType::Listing(_))),
+        render,
+        &collections,
+    )?;
+    for (page, clock) in listings {
+        rendered.pages.insert(page.output_path.clone(), clock);
+    }
+
+    Ok(rendered)
+}
+
 pub fn write_sitemap(
     parsed_config: &config::ResolvedConfig,
     site_pages: &SitePages,
@@ -411,7 +506,7 @@ pub fn write_sitemap(
         .join(&sitemap_config.filename);
 
     log::info!("Writing sitemap to {}", sitemap_path.display());
-    fs::write(&sitemap_path, xml)?;
+    write_if_changed(&sitemap_path, xml)?;
 
     Ok(())
 }
@@ -441,7 +536,7 @@ pub fn write_robots(parsed_config: &config::ResolvedConfig) -> std::io::Result<(
             user_robots.display(),
             robots_path.display()
         );
-        fs::copy(&user_robots, &robots_path)?;
+        write_if_changed(&robots_path, fs::read(&user_robots)?)?;
         return Ok(());
     }
 
@@ -459,7 +554,17 @@ pub fn write_robots(parsed_config: &config::ResolvedConfig) -> std::io::Result<(
 
     let content = robots::generate_robots(&robots_config, sitemap_url(parsed_config).as_deref());
     log::info!("Writing robots.txt to {}", robots_path.display());
-    fs::write(&robots_path, content)
+    write_if_changed(&robots_path, content)
+}
+
+/// Writes `contents` to `path` unless the file already holds exactly that,
+/// so files regenerated by every build keep their modification time.
+pub fn write_if_changed(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let contents = contents.as_ref();
+    match fs::read(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        _ => fs::write(path, contents),
+    }
 }
 
 /// Writes the configured feeds and returns the paths of the files written
@@ -624,7 +729,7 @@ fn write_feed_files(
         };
         let path = output_dir.join(kind.filename());
         log::info!("Writing feed to {}", path.display());
-        fs::write(&path, kind.generate(&channel, &items))?;
+        write_if_changed(&path, kind.generate(&channel, &items))?;
         written.push(path);
     }
 

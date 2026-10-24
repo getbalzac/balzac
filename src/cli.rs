@@ -1,16 +1,17 @@
 use std::fs;
 use std::path::Path;
 
+use crate::cache::{self, BuildCache, FullBuildReason};
 use crate::config::{Config, CreateConfigError, InitFeature, ResolvedConfig};
 use crate::dev;
+use crate::helpers::track_clock;
 use crate::hooks::{HookExecutor, HookPhase};
-use crate::listing::render_listing_pages;
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
 use crate::{
-    add_assets, discover_site_pages, make_dist_folder, render_collection_items, render_pages,
-    write_feeds, write_robots, write_sitemap,
+    discover_site_pages, make_dist_folder, render_selected_pages, write_feeds, write_robots,
+    write_sitemap,
 };
 
 pub fn init(path: &Path, features: &[InitFeature]) {
@@ -60,10 +61,47 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         }
     }
 
+    if let Err(e) = ignore_state_directory(path) {
+        eprintln!("Error: Could not update .gitignore: {e}");
+        std::process::exit(1);
+    }
+
     log::info!("Project initialized successfully!");
 }
 
-pub fn build(path: &Path) {
+/// Adds Balzac's state directory (the build cache) to the project's `.gitignore`.
+fn ignore_state_directory(path: &Path) -> std::io::Result<()> {
+    let entry = format!("/{}/", cache::STATE_DIRECTORY);
+    let gitignore = path.join(".gitignore");
+    let existing = match fs::read_to_string(&gitignore) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let ignored = existing.lines().any(|line| {
+        let line = line.trim().trim_start_matches('/').trim_end_matches('/');
+        line == cache::STATE_DIRECTORY
+    });
+    if ignored {
+        return Ok(());
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    fs::write(&gitignore, format!("{existing}{separator}{entry}\n"))?;
+    log::info!("Added {entry} to .gitignore");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuildOptions {
+    /// Ignore the build cache and rebuild everything.
+    pub force: bool,
+}
+
+pub fn build(path: &Path, options: BuildOptions) {
     let start = std::time::Instant::now();
     let parsed_config =
         Config::load(path).unwrap_or_else(|e| fail("Error loading configuration", &e));
@@ -71,8 +109,17 @@ pub fn build(path: &Path) {
 
     let resolved_config = parsed_config.resolve(path);
 
+    let mut cache = BuildCache::open(&resolved_config, options.force)
+        .unwrap_or_else(|e| fail("Error opening build cache", &e.into()));
+
     let hook_executor = HookExecutor::new(parsed_config.hooks.as_ref(), path);
     hook_executor.execute(HookPhase::RenderInitBefore);
+
+    // Hash the shared inputs before the renderer reads them, so a hook editing
+    // them later is picked up by the next build.
+    let global = cache::global_key(&parsed_config, &resolved_config)
+        .unwrap_or_else(|e| fail("Error hashing build inputs", &e.into()));
+    cache.start(global);
 
     let start = std::time::Instant::now();
     let mut render: HandlebarsRenderer<'_> = HandlebarsRenderer::new(&resolved_config);
@@ -84,15 +131,7 @@ pub fn build(path: &Path) {
     hook_executor.execute(HookPhase::RenderInitAfter);
     hook_executor.execute(HookPhase::BuildBefore);
 
-    let start = std::time::Instant::now();
-    match make_dist_folder(&resolved_config) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error creating output directory: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Created output directory (took {:?})", start.elapsed());
+    prepare_output_directory(&resolved_config, &cache);
 
     let start = std::time::Instant::now();
     let site_pages = match discover_site_pages(&resolved_config) {
@@ -110,35 +149,7 @@ pub fn build(path: &Path) {
 
     hook_executor.execute(HookPhase::RenderBefore);
 
-    let start = std::time::Instant::now();
-    match render_pages(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering static pages: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered static pages (took {:?})", start.elapsed());
-
-    let start = std::time::Instant::now();
-    match render_collection_items(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering collections: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered collections (took {:?})", start.elapsed());
-
-    let start = std::time::Instant::now();
-    match render_listing_pages(&resolved_config, site_pages.all(), &render) {
-        Ok(()) => {}
-        Err(e) => {
-            log::error!("Error rendering listings: {e}");
-            std::process::exit(1);
-        }
-    }
-    log::info!("Rendered listings (took {:?})", start.elapsed());
+    render_changed_pages(&resolved_config, &site_pages, &render, &mut cache);
 
     hook_executor.execute(HookPhase::RenderAfter);
 
@@ -167,10 +178,10 @@ pub fn build(path: &Path) {
         }
     }
 
-    build_feeds(&resolved_config, &site_pages, &render);
+    build_feeds(&resolved_config, &site_pages, &render, &mut cache);
 
     let start = std::time::Instant::now();
-    match add_assets(&resolved_config) {
+    match cache.sync_assets(&resolved_config) {
         Ok(()) => {}
         Err(e) => {
             log::error!("Error handling assets: {e}");
@@ -179,22 +190,98 @@ pub fn build(path: &Path) {
     }
     log::info!("Handled assets (took {:?})", start.elapsed());
 
+    match cache.prune_stale_outputs() {
+        Ok(0) => {}
+        Ok(removed) => log::info!("Removed {removed} stale output files"),
+        Err(e) => {
+            log::error!("Error removing stale output files: {e}");
+            std::process::exit(1);
+        }
+    }
+
     hook_executor.execute(HookPhase::BuildAfter);
+
+    if let Err(e) = cache.save() {
+        // the build itself succeeded; the next one just starts from scratch
+        log::warn!("Could not write build cache: {e}");
+    }
+}
+
+/// Recreates the output directory for a full build, or keeps it for an
+/// incremental one.
+fn prepare_output_directory(resolved_config: &ResolvedConfig, cache: &BuildCache) {
+    let start = std::time::Instant::now();
+    let output_ready = match cache.full_build_reason() {
+        Some(reason) => {
+            log::info!(
+                "{}, rebuilding everything",
+                match reason {
+                    FullBuildReason::Forced => "--force given",
+                    FullBuildReason::NoCache => "No build cache",
+                    FullBuildReason::GlobalChange =>
+                        "Site-wide inputs changed (config, partials, layouts, tag templates, helpers, ...)",
+                }
+            );
+            make_dist_folder(resolved_config)
+        }
+        None => fs::create_dir_all(&resolved_config.output_directory),
+    };
+    if let Err(e) = output_ready {
+        log::error!("Error creating output directory: {e}");
+        std::process::exit(1);
+    }
+    log::info!("Prepared output directory (took {:?})", start.elapsed());
+}
+
+/// Renders the pages whose inputs or output changed since the last build.
+fn render_changed_pages(
+    resolved_config: &ResolvedConfig,
+    site_pages: &SitePages,
+    render: &HandlebarsRenderer,
+    cache: &mut BuildCache,
+) {
+    let start = std::time::Instant::now();
+    let selected = cache
+        .plan_pages(resolved_config, site_pages.all())
+        .unwrap_or_else(|e| fail("Error checking build cache", &e.into()));
+    let rendered = render_selected_pages(resolved_config, site_pages.all(), render, |page| {
+        selected.contains(&page.output_path)
+    })
+    .unwrap_or_else(|e| fail("Error rendering pages", &e));
+    if let Err(e) = cache.finish_pages(&rendered) {
+        fail("Error updating build cache", &e.into());
+    }
+    log::info!(
+        "Rendered {} pages, {} unchanged (took {:?})",
+        rendered.pages.len(),
+        cache.reused_pages(),
+        start.elapsed()
+    );
 }
 
 fn build_feeds(
     resolved_config: &ResolvedConfig,
     site_pages: &SitePages,
     render: &HandlebarsRenderer,
+    cache: &mut BuildCache,
 ) {
     if resolved_config.feed.is_none() {
         return;
     }
 
     let start = std::time::Instant::now();
-    if let Err(e) = write_feeds(resolved_config, site_pages, render) {
-        log::error!("Error writing feeds: {e}");
-        std::process::exit(1);
+    match cache.feeds_fresh() {
+        Ok(true) => {
+            log::info!("Feeds are unchanged");
+            return;
+        }
+        Ok(false) => {}
+        Err(e) => fail("Error checking build cache", &e.into()),
+    }
+    let (written, clock) = track_clock(|| write_feeds(resolved_config, site_pages, render));
+    let written = written.unwrap_or_else(|e| fail("Error writing feeds", &e));
+    if let Err(e) = cache.record_feeds(&written, clock) {
+        fail("Error updating build cache", &e.into());
     }
     log::info!("Generated feeds (took {:?})", start.elapsed());
 }
