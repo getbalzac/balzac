@@ -769,6 +769,20 @@ The `404` page is always left out of the sitemap, even if its frontmatter sets t
 
 Sitemap metadata is read when pages are discovered, before the `render_before` hook runs. A `render_before` hook that rewrites a static page's frontmatter changes the rendered page but not its sitemap entry. Collection items use the frontmatter saved at discovery for both rendering and the sitemap. To change frontmatter from a hook, use `build_before`, which runs before discovery.
 
+## Benchmarks
+
+The [Benchmark workflow](.github/workflows/benchmark.yml) times the latest balzac, [Zola](https://www.getzola.org/) and [Cobalt](https://cobalt-org.github.io/) releases building the same generated blog. It runs after each release and updates the results below; it can also be run from the Actions tab. Adding the `bench` label to a pull request benchmarks its build against them too: the results are posted in a comment (updated on later runs) and the label is removed, so it can be added again.
+
+<!-- benchmark:start -->
+Results are added here after the next release.
+<!-- benchmark:end -->
+
+To run it locally with `balzac`, `zola`, `cobalt` and [hyperfine](https://github.com/sharkdp/hyperfine) 2.x on your `PATH`:
+
+```sh
+bench/run.sh 100 1000   # number of posts per site; results go to ./results
+```
+
 ## Development
 
 All required tooling can be installed using [mise](https://mise.jdx.dev/) with `mise install`

@@ -1,0 +1,213 @@
+name: Benchmark
+
+# Compares the latest balzac release with other Rust static site generators,
+# see bench/run.sh. Results are shown in the run summary and uploaded as an artifact.
+on:
+    # releases are published by the Release workflow's GITHUB_TOKEN, which doesn't
+    # trigger `release` events, so run after that workflow instead
+    workflow_run:
+        workflows: [Release]
+        types: [completed]
+    # adding the `bench` label to a pull request also benchmarks its build and posts
+    # the results in a comment. pull_request_target gives the comment job a token that
+    # can write to pull requests from forks too; the PR's code only runs in the
+    # benchmark job, which has a read-only token.
+    pull_request_target:
+        types: [labeled]
+    workflow_dispatch:
+        inputs:
+            posts:
+                description: Site sizes to benchmark (number of posts, space separated)
+                default: "100 1000 2500"
+            runs:
+                description: Timed builds per tool and size
+                default: "10"
+            update_readme:
+                description: Commit the results to the README (only when run on master)
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+# one benchmark per pull request at a time; any other label also triggers the
+# workflow (and skips every job), so it gets its own group instead of cancelling
+concurrency:
+    group: benchmark-${{ github.event.label.name == 'bench' && github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: false
+
+jobs:
+    benchmark:
+        # the Release workflow also runs on pull requests, where it publishes nothing
+        if: >-
+            github.event_name == 'workflow_dispatch'
+            || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+            || (github.event_name == 'pull_request_target' && github.event.label.name == 'bench')
+        runs-on: ubuntu-latest
+        outputs:
+            balzac-version: ${{ steps.install.outputs.balzac-version }}
+        env:
+            TARGET: x86_64-unknown-linux-gnu
+            HYPERFINE_VERSION: v2.0.0
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  # the commit that was labeled, not the base branch pull_request_target defaults to
+                  ref: ${{ github.event.pull_request.head.sha || github.sha }}
+                  persist-credentials: false
+                  # checkout refuses fork PRs under pull_request_target unless told otherwise;
+                  # this job only has a read-only token, which isn't given to the build, and
+                  # uses no caches, and the label can only be added by maintainers
+                  allow-unsafe-pr-checkout: true
+
+            - name: Install the latest releases
+              id: install
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$RUNNER_TEMP/bin"
+                  # fetch <repo> <tag> <binary> <asset pattern>
+                  fetch() {
+                      local dir
+                      dir="$(mktemp -d)"
+                      gh release download "$2" --repo "$1" --pattern "$4" --dir "$dir"
+                      for archive in "$dir"/*; do tar -xf "$archive" -C "$dir"; done
+                      find "$dir" -type f -name "$3" -exec install -m 755 {} "$RUNNER_TEMP/bin/$3" \;
+                  }
+                  latest() { gh release view --repo "$1" --json tagName --jq .tagName; }
+
+                  balzac="$(latest getbalzac/balzac)"
+                  fetch getbalzac/balzac "$balzac" balzac "balzac-$TARGET.tar.xz"
+                  fetch getzola/zola "$(latest getzola/zola)" zola "zola-*-$TARGET.tar.gz"
+                  fetch cobalt-org/cobalt.rs "$(latest cobalt-org/cobalt.rs)" cobalt "cobalt-*-$TARGET.tar.gz"
+                  fetch sharkdp/hyperfine "$HYPERFINE_VERSION" hyperfine "hyperfine-*-$TARGET.tar.gz"
+
+                  echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+                  echo "BALZAC_VERSION=${balzac#v}" >>"$GITHUB_ENV"
+                  echo "balzac-version=${balzac#v}" >>"$GITHUB_OUTPUT"
+
+            - name: Build the pull request
+              if: github.event_name == 'pull_request_target'
+              shell: bash
+              env:
+                  SHA: ${{ github.event.pull_request.head.sha }}
+              run: |
+                  rustup update stable && rustup default stable
+                  cargo build --release --locked
+                  echo "BALZAC_PR=$PWD/target/release/balzac" >>"$GITHUB_ENV"
+                  echo "BALZAC_PR_VERSION=${SHA:0:7}" >>"$GITHUB_ENV"
+
+            - name: Run the benchmark
+              shell: bash
+              env:
+                  POSTS: ${{ inputs.posts || '100 1000 2500' }}
+                  RUNS: ${{ inputs.runs || '10' }}
+                  RESULTS_DIR: ${{ runner.temp }}/results
+              run: |
+                  # POSTS is split into one argument per size on purpose
+                  # shellcheck disable=SC2086
+                  bench/run.sh $POSTS
+                  cat "$RESULTS_DIR/summary.md" >>"$GITHUB_STEP_SUMMARY"
+
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: benchmark-results
+                  path: ${{ runner.temp }}/results
+
+    readme:
+        needs: benchmark
+        # runs after releases; manual runs only update the README when asked to, from master
+        if: >-
+            needs.benchmark.result == 'success'
+            && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.update_readme && github.ref == 'refs/heads/master'))
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  ref: master
+
+            - uses: actions/download-artifact@v8
+              with:
+                  name: benchmark-results
+                  path: ${{ runner.temp }}/results
+
+            - name: Commit the results
+              shell: bash
+              env:
+                  RESULTS_DIR: ${{ runner.temp }}/results
+                  BALZAC_VERSION: ${{ needs.benchmark.outputs.balzac-version }}
+              run: |
+                  set -euo pipefail
+                  python3 -I bench/update-readme.py "$RESULTS_DIR/summary.md" README.md
+                  if git diff --quiet README.md; then
+                      echo "README already up to date"
+                      exit 0
+                  fi
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  # skipped by cliff.toml, so it stays out of the changelog
+                  git commit -m "chore(bench): update benchmark results for balzac $BALZAC_VERSION" README.md
+                  # pushes with GITHUB_TOKEN don't trigger other workflows, so this can't start a release
+                  for attempt in 1 2 3; do
+                      git pull --rebase origin master && git push origin HEAD:master && exit 0
+                      sleep $((attempt * 5))
+                  done
+                  exit 1
+
+    comment:
+        needs: benchmark
+        # also report failures, and take the label off either way so it can be added again
+        if: always() && github.event_name == 'pull_request_target' && github.event.label.name == 'bench'
+        runs-on: ubuntu-latest
+        permissions:
+            issues: write
+            pull-requests: write
+        env:
+            GH_TOKEN: ${{ github.token }}
+            REPO: ${{ github.repository }}
+            PR: ${{ github.event.pull_request.number }}
+            SHA: ${{ github.event.pull_request.head.sha }}
+            RESULT: ${{ needs.benchmark.result }}
+            RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        steps:
+            - uses: actions/download-artifact@v8
+              if: needs.benchmark.result == 'success'
+              with:
+                  name: benchmark-results
+                  path: results
+
+            - name: Post or update the comment
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  marker="<!-- balzac-benchmark -->"
+                  {
+                      echo "$marker"
+                      if [ "$RESULT" = success ]; then
+                          cat results/summary.md
+                          echo
+                          echo "Benchmarked ${SHA:0:7} in [this run]($RUN_URL)."
+                      else
+                          echo "## Static site generator benchmark"
+                          echo
+                          echo "The benchmark of ${SHA:0:7} did not complete ($RESULT), see [the run]($RUN_URL)."
+                      fi
+                  } >body.md
+
+                  id="$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                      --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)"
+                  if [ -n "$id" ]; then
+                      gh api --method PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md >/dev/null
+                  else
+                      gh api --method POST "repos/$REPO/issues/$PR/comments" -F body=@body.md >/dev/null
+                  fi
+
+            - name: Remove the label
+              if: always()
+              shell: bash
+              # a 404 means the label was already removed
+              run: gh api --method DELETE "repos/$REPO/issues/$PR/labels/bench" >/dev/null || true
