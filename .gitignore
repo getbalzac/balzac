@@ -1,3 +1,8 @@
 /target
 dist
 node_modules
+# filled in by npm/scripts/prepare.mjs at release time
+/npm/platforms/*/bin
+/npm/platforms/*/LICENSE
+/npm/balzac/LICENSE
+/npm/balzac/README.md

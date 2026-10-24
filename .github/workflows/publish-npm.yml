@@ -1,0 +1,48 @@
+# Called by dist's release.yml (publish-jobs in dist-workspace.toml) once the
+# GitHub Release exists. Publishes the balzac npm package and its @balzac/*
+# platform packages from the archives dist built in the same run.
+#
+# Authenticates with npm trusted publishing: each package trusts
+# getbalzac/balzac's release.yml (npm checks the calling workflow, not this
+# one) in the npm environment, so no npm token is involved.
+name: Publish npm
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    # npm's trusted publisher config names this environment, so only jobs
+    # running in it (and passing its protection rules) can publish
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/balzac
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch dist archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-*
+          path: target/distrib/
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+      # trusted publishing needs npm >= 11.5.1
+      - run: npm install --global npm@^11.5.1
+      - name: Prepare packages
+        run: node npm/scripts/prepare.mjs "$(jq --raw-output '.releases[] | select(.app_name == "balzac") | .app_version' <<< "$PLAN")" target/distrib
+      - name: Publish packages
+        run: npm/scripts/publish.sh

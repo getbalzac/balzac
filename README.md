@@ -2,6 +2,42 @@
 
 > an experiment in building a static site generator using rust
 
+## Install
+
+With npm (or any Node package manager), globally or as a project dependency:
+
+```sh
+npm install --global balzac
+# or run it without installing
+npx balzac init
+```
+
+With Homebrew:
+
+```sh
+brew install getbalzac/tap/balzac
+```
+
+With Cargo:
+
+```sh
+cargo install balzac
+```
+
+With the installer scripts from the [latest release](https://github.com/getbalzac/balzac/releases/latest):
+
+```sh
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/getbalzac/balzac/releases/latest/download/balzac-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/getbalzac/balzac/releases/latest/download/balzac-installer.ps1 | iex"
+```
+
+Prebuilt binaries are available for macOS (arm64, x64), Linux (arm64, x64; glibc and musl) and Windows (arm64, x64).
+
 ## Usage
 
 - Install Balzac

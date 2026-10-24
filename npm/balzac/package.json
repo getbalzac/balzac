@@ -1,0 +1,35 @@
+{
+  "name": "balzac",
+  "version": "0.0.0",
+  "description": "A blazingly fast static site generator",
+  "license": "MIT",
+  "homepage": "https://balzac.rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getbalzac/balzac.git",
+    "directory": "npm/balzac"
+  },
+  "bin": {
+    "balzac": "bin/balzac.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@balzac/darwin-arm64": "0.0.0",
+    "@balzac/darwin-x64": "0.0.0",
+    "@balzac/linux-arm64-gnu": "0.0.0",
+    "@balzac/linux-arm64-musl": "0.0.0",
+    "@balzac/linux-x64-gnu": "0.0.0",
+    "@balzac/linux-x64-musl": "0.0.0",
+    "@balzac/win32-arm64": "0.0.0",
+    "@balzac/win32-x64": "0.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
