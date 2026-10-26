@@ -23,6 +23,8 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 log = "0.4.29"
 # renders pages in parallel; RAYON_NUM_THREADS caps the number of threads
 rayon = "1.10"
+# directive names end at Unicode punctuation (`\p{P}`, `\p{S}`); already in the tree through colog and syntect
+regex = { version = "1", default-features = false, features = ["std", "unicode-gencat"] }
 # used by script_helpers.rs; same version range and features as handlebars' script_helper, so it is the same crate
 rhai = { version = "1.16", features = ["sync", "serde"], optional = true }
 serde_yaml = "0.9"

@@ -98,6 +98,7 @@ dependencies = [
  "jiff",
  "log",
  "rayon",
+ "regex",
  "rhai",
  "serde",
  "serde_json",

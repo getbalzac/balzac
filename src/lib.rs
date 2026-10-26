@@ -3,6 +3,7 @@ pub mod collection;
 pub mod config;
 pub mod context;
 pub mod dev;
+pub mod directive;
 pub mod error;
 pub mod feed;
 pub mod fingerprint;

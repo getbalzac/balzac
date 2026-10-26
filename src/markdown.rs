@@ -56,7 +56,8 @@ pub fn is_excerpt_marker(html: &str) -> bool {
 
 /// Finds the nodes making up the excerpt: the top-level nodes before the
 /// `<!-- more -->` marker if there is one, otherwise the first paragraph,
-/// wherever it is nested (e.g. in a blockquote or list).
+/// wherever it is nested (e.g. in a blockquote or list, but not in a footnote
+/// or a container directive).
 #[must_use]
 pub fn excerpt_nodes<'a>(root: &'a AstNode<'a>) -> Vec<&'a AstNode<'a>> {
     let mut before_marker = Vec::new();
@@ -75,7 +76,7 @@ pub fn excerpt_nodes<'a>(root: &'a AstNode<'a>) -> Vec<&'a AstNode<'a>> {
                 && !node.ancestors().any(|ancestor| {
                     matches!(
                         ancestor.data.borrow().value,
-                        NodeValue::FootnoteDefinition(_)
+                        NodeValue::FootnoteDefinition(_) | NodeValue::BlockDirective(_)
                     )
                 })
         })
