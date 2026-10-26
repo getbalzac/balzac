@@ -32,6 +32,14 @@ pub struct HandlebarsRenderer<'a> {
     tag_template_paths: HashMap<String, PathBuf>,
 }
 
+// Pages are rendered in parallel with one shared renderer (see `parallel`).
+// Handlebars only accepts `Send + Sync` helpers, and Rhai script helpers are
+// thanks to rhai's `sync` feature, so a helper that isn't fails to compile here.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<HandlebarsRenderer<'static>>();
+};
+
 /// Converts a handlebars parse error of the template at `path`.
 fn template_error(path: &Path, error: &handlebars::TemplateError) -> Error {
     let (line, column) = error.pos().unzip();
@@ -438,6 +446,19 @@ impl HandlebarsRenderer<'_> {
 }
 
 impl HandlebarsRenderer<'_> {
+    /// Renders `template`, the content of the file at `path`, with a context
+    /// that can be reused across renders (see `SiteContext`).
+    pub fn render_with_context(
+        &self,
+        path: &Path,
+        template: &str,
+        context: &handlebars::Context,
+    ) -> Result<String> {
+        self.registry
+            .render_template_with_context(template, context)
+            .map_err(|e| self.render_error(path, &e))
+    }
+
     /// Renders a markdown string from a template (the `markdown` helper), with
     /// tag templates rendered by `registry`. With `inline`, a document made of
     /// a single paragraph is rendered without the `<p>` around it.
@@ -492,9 +513,8 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
         }
     }
     fn render(&self, path: &Path, template: String, data: serde_json::Value) -> Result<String> {
-        self.registry
-            .render_template(&template, &data)
-            .map_err(|e| self.render_error(path, &e))
+        // `render_template` would serialize `data` into a copy; wrapping moves it
+        self.render_with_context(path, &template, &handlebars::Context::from(data))
     }
 
     fn render_markdown(&self, body: &str) -> Result<String> {

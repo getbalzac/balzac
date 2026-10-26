@@ -16,9 +16,10 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::config::{ResolvedConfig, TaxonomyConfig};
-use crate::context::{build_collections_context, compare_collection_items, merge_contexts};
+use crate::context::{SiteContext, compare_collection_items};
 use crate::error::{self, Result};
-use crate::renderer::{HandlebarsRenderer, Renderer};
+use crate::parallel;
+use crate::renderer::HandlebarsRenderer;
 use crate::sitemap::{PageEntry, PageType, SitemapMeta};
 
 /// Template of a collection listing, in `<pages_directory>/<collection>/`.
@@ -462,21 +463,26 @@ fn collect_terms(
     terms.into_values().map(Arc::new).collect()
 }
 
-/// Renders every listing entry in `pages`.
-pub fn render_listing_pages(
-    config: &ResolvedConfig,
-    pages: &[PageEntry],
-    render: &HandlebarsRenderer,
-) -> Result<()> {
-    if !pages
-        .iter()
-        .any(|page| matches!(page.page_type, PageType::Listing(_)))
-    {
+/// Renders every listing entry of the site.
+pub fn render_listing_pages(site: &SiteContext, render: &HandlebarsRenderer) -> Result<()> {
+    let mut templates: HashMap<&Path, String> = HashMap::new();
+    let mut listings = Vec::new();
+
+    for page in site.pages() {
+        let PageType::Listing(listing) = &page.page_type else {
+            continue;
+        };
+        if !templates.contains_key(page.source_path.as_path()) {
+            templates.insert(&page.source_path, error::read_to_string(&page.source_path)?);
+        }
+        listings.push((page, listing));
+    }
+    if listings.is_empty() {
         return Ok(());
     }
 
-    let collections = build_collections_context(pages, render)?;
-    let items: HashMap<&str, &Value> = collections
+    let items: HashMap<&str, &Value> = site
+        .collections()
         .as_object()
         .into_iter()
         .flat_map(|collections| collections.values())
@@ -484,34 +490,25 @@ pub fn render_listing_pages(
         .flatten()
         .filter_map(|item| Some((item["url"].as_str()?, item)))
         .collect();
-    let mut templates: HashMap<&Path, String> = HashMap::new();
 
-    for page in pages {
-        let PageType::Listing(listing) = &page.page_type else {
-            continue;
-        };
+    parallel::create_parent_dirs(listings.iter().map(|(page, _)| page.output_path.as_path()))?;
+    parallel::try_for_each(&listings, |(page, listing)| {
         log::info!("Rendering listing {}", page.url_path);
 
-        if !templates.contains_key(page.source_path.as_path()) {
-            templates.insert(&page.source_path, error::read_to_string(&page.source_path)?);
-        }
-        let template = templates[page.source_path.as_path()].clone();
+        let Value::Object(page_context) = listing.context(&items) else {
+            unreachable!("listing contexts are objects");
+        };
+        let rendered = site.with_page_context(page_context, |context| {
+            render.render_with_context(
+                &page.source_path,
+                &templates[page.source_path.as_path()],
+                context,
+            )
+        })?;
 
-        let mut context = listing.context(&items);
-        context["collections"] = collections.clone();
-        let rendered = render.render(
-            &page.source_path,
-            template,
-            merge_contexts(config, &context),
-        )?;
-
-        if let Some(parent) = page.output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         fs::write(&page.output_path, rendered)?;
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(test)]

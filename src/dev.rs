@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 
 use crate::config::{Config, Hooks, ResolvedConfig, UrlStyle};
-use crate::context::build_collections_context;
+use crate::context::SiteContext;
 use crate::error::Result;
 use crate::hooks::{HookExecutor, HookPhase};
 use crate::listing::render_listing_pages;
@@ -388,8 +388,8 @@ impl DevSession {
                 // copied asset) before the page can overwrite anything.
                 let site_pages = discover_site_pages(&self.resolved_config)?;
                 let renderer = self.create_renderer()?;
-                let collections = build_collections_context(site_pages.all(), &renderer)?;
-                render_static_page(&self.resolved_config, &page, &renderer, &collections)?;
+                let site = SiteContext::new(&self.resolved_config, site_pages.all(), &renderer)?;
+                render_static_page(&self.resolved_config, &page, &renderer, &site)?;
                 Ok(Some(ReloadMessage::targeted(&target.url_path)))
             }
         }
@@ -432,9 +432,12 @@ impl DevSession {
         let site_pages = discover_site_pages(&self.resolved_config)?;
 
         self.run_hook(HookPhase::RenderBefore)?;
-        render_pages(&self.resolved_config, site_pages.all(), renderer)?;
-        render_collection_items(&self.resolved_config, site_pages.all(), renderer)?;
-        render_listing_pages(&self.resolved_config, site_pages.all(), renderer)?;
+        let site = SiteContext::new(&self.resolved_config, site_pages.all(), renderer)?;
+        render_pages(&self.resolved_config, &site, renderer)?;
+        render_collection_items(&self.resolved_config, &site, renderer)?;
+        render_listing_pages(&site, renderer)?;
+        // frees the per-thread page contexts before feeds are written
+        drop(site);
         self.run_hook(HookPhase::RenderAfter)?;
         self.prune_stale_outputs(&site_pages)?;
         write_sitemap(&self.resolved_config, &site_pages)?;

@@ -9,6 +9,7 @@ pub mod helpers;
 pub mod hooks;
 pub mod listing;
 pub mod markdown;
+pub mod parallel;
 pub mod renderer;
 pub mod robots;
 #[cfg(feature = "script-helpers")]
@@ -23,7 +24,7 @@ use std::{
 };
 
 use crate::{
-    context::{build_collections_context, merge_contexts},
+    context::SiteContext,
     error::{Error, Result},
     renderer::{HandlebarsRenderer, Renderer},
     sitemap::{PageEntry, PageType, SitePages, SitemapMeta},
@@ -347,31 +348,30 @@ fn collect_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Resu
 
 pub fn render_pages(
     parsed_config: &config::ResolvedConfig,
-    pages: &[PageEntry],
+    site: &SiteContext,
     render: &HandlebarsRenderer,
 ) -> Result<()> {
-    let collections = build_collections_context(pages, render)?;
+    let pages: Vec<&PageEntry> = site
+        .pages()
+        .iter()
+        .filter(|page| matches!(page.page_type, PageType::Static))
+        .collect();
 
-    for page in pages {
-        if !matches!(page.page_type, PageType::Static) {
-            continue;
-        }
-
-        render_static_page(parsed_config, page, render, &collections)?;
-    }
-
-    Ok(())
+    parallel::create_parent_dirs(pages.iter().map(|page| page.output_path.as_path()))?;
+    parallel::try_for_each(&pages, |page| {
+        write_static_page(parsed_config, page, render, site)
+    })
 }
 
 pub fn render_collection_items(
     parsed_config: &config::ResolvedConfig,
-    pages: &[PageEntry],
+    site: &SiteContext,
     render: &HandlebarsRenderer,
 ) -> Result<()> {
-    let collections = build_collections_context(pages, render)?;
-    let mut seen_collections: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_collections: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut items = Vec::new();
 
-    for page in pages {
+    for page in site.pages() {
         let PageType::Collection {
             name: collection_name,
         } = &page.page_type
@@ -379,14 +379,16 @@ pub fn render_collection_items(
             continue;
         };
 
-        if seen_collections.insert(collection_name.clone()) {
+        if seen_collections.insert(collection_name) {
             log::info!("Rendering collection {collection_name}");
         }
-
-        render_collection_page(parsed_config, page, render, &collections)?;
+        items.push(page);
     }
 
-    Ok(())
+    parallel::create_parent_dirs(items.iter().map(|page| page.output_path.as_path()))?;
+    parallel::try_for_each(&items, |page| {
+        write_collection_page(parsed_config, page, render, site)
+    })
 }
 
 pub fn write_sitemap(
@@ -1027,11 +1029,23 @@ pub fn is_collection_template(parsed_config: &config::ResolvedConfig, path: &Pat
     parsed_config.collection_template_path(&collection_name) == path
 }
 
+/// Renders one static page, creating its output directory.
 pub fn render_static_page(
     parsed_config: &config::ResolvedConfig,
     page: &PageEntry,
     render: &HandlebarsRenderer,
-    collections: &serde_json::Value,
+    site: &SiteContext,
+) -> Result<()> {
+    create_parent_dir(&page.output_path)?;
+    write_static_page(parsed_config, page, render, site)
+}
+
+/// Renders one static page into its existing output directory.
+fn write_static_page(
+    parsed_config: &config::ResolvedConfig,
+    page: &PageEntry,
+    render: &HandlebarsRenderer,
+    site: &SiteContext,
 ) -> Result<()> {
     log::info!(
         "Rendering page {}",
@@ -1042,71 +1056,62 @@ pub fn render_static_page(
     );
 
     let (frontmatter, template, frontmatter_lines) = read_static_page_template(&page.source_path)?;
-    let mut local_context = serde_json::json!({ "collections": collections });
+    let mut page_context = serde_json::Map::new();
     if let Some(fm) = frontmatter {
-        local_context["fm"] = fm;
+        page_context.insert("fm".to_string(), fm);
     }
-    let rendered = render
-        .render(
-            &page.source_path,
-            template,
-            merge_contexts(parsed_config, &local_context),
-        )
+    let rendered = site
+        .with_page_context(page_context, |context| {
+            render.render_with_context(&page.source_path, &template, context)
+        })
         .map_err(|e| e.offset_lines(&page.source_path, frontmatter_lines))?;
-    create_parent_dir(&page.output_path)?;
     fs::write(&page.output_path, rendered)?;
     Ok(())
 }
 
-pub fn render_collection_page(
+/// Renders one collection item into its existing output directory.
+fn write_collection_page(
     parsed_config: &config::ResolvedConfig,
     page: &PageEntry,
     render: &HandlebarsRenderer,
-    collections: &serde_json::Value,
+    site: &SiteContext,
 ) -> Result<()> {
     let collection_name = match &page.page_type {
         PageType::Collection { name } => name,
         PageType::Static | PageType::Listing(_) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "render_collection_page expects a collection entry",
+                "write_collection_page expects a collection entry",
             )
             .into());
         }
     };
 
-    create_parent_dir(&page.output_path)?;
-
     let template_path = parsed_config.collection_template_path(collection_name);
-    let raw_content = page
-        .content
-        .as_ref()
-        .expect("Collection item should have parsed content");
     let frontmatter = page
         .frontmatter
         .as_ref()
         .expect("Collection item should have frontmatter");
+    // Rendered once for the `collections` context and reused here
+    let document = site
+        .document(&page.source_path)
+        .expect("Collection item should be rendered with its site");
 
-    let document = render
-        .render_document(raw_content)
-        .map_err(|e| e.in_page(&page.source_path))?;
-
-    let rendered_result = render
-        .render(
-            &template_path,
-            error::read_to_string(&template_path)?,
-            merge_contexts(
-                parsed_config,
-                &serde_json::json!({
-                    "content": document.html,
-                    "fm": frontmatter,
-                    "toc": document.toc,
-                    "toc_html": document.toc_html,
-                    "excerpt": document.excerpt,
-                    "collections": collections,
-                }),
-            ),
-        )
+    let page_context = serde_json::json!({
+        "content": document.html,
+        "fm": frontmatter,
+        "toc": document.toc,
+        "toc_html": document.toc_html,
+        "excerpt": document.excerpt,
+    });
+    let serde_json::Value::Object(page_context) = page_context else {
+        unreachable!("json! object");
+    };
+    let template = error::read_to_string(&template_path)?;
+    let rendered_result = site
+        .with_page_context(page_context, |context| {
+            render.render_with_context(&template_path, &template, context)
+        })
         .map_err(|e| e.in_page(&page.source_path))?;
 
     fs::write(&page.output_path, &rendered_result)?;

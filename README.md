@@ -78,6 +78,8 @@ balzac build
 
 When a template, frontmatter or config file is invalid, the build stops with an error naming the file (and the line and column for template errors) and exits with status 1.
 
+Pages are rendered in parallel, one thread per CPU core. Set `RAYON_NUM_THREADS` to use fewer threads, e.g. `RAYON_NUM_THREADS=1 balzac build` for a sequential build. The output is the same whatever the number of threads. When several pages fail, the build reports the first one in build order: static pages, then collection items, then listings.
+
 Build a site from a specific root:
 
 ```sh
