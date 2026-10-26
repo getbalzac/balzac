@@ -3,7 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
-use comrak::{Anchorizer, Arena, Options, Plugins, format_html_with_plugins, parse_document};
+use comrak::options::Plugins;
+use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 use handlebars::{Handlebars, RenderErrorReason};
 
 use crate::{
@@ -305,14 +306,15 @@ impl HandlebarsRenderer<'_> {
         options: &Options,
         plugins: &Plugins,
     ) -> std::io::Result<String> {
-        let mut buf = Vec::new();
-        format_html_with_plugins(node, options, &mut buf, plugins)?;
-        String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let mut html = String::new();
+        format_html_with_plugins(node, options, &mut html, plugins)
+            .map_err(std::io::Error::other)?;
+        Ok(html)
     }
 
     fn render_children_to_html<'b>(
         node: &'b AstNode<'b>,
-        arena: &'b Arena<AstNode<'b>>,
+        arena: &'b Arena<'b>,
         options: &Options,
         plugins: &Plugins,
     ) -> std::io::Result<String> {
@@ -353,7 +355,7 @@ impl HandlebarsRenderer<'_> {
         &self,
         registry: &Handlebars<'_>,
         node: &'b AstNode<'b>,
-        arena: &'b Arena<AstNode<'b>>,
+        arena: &'b Arena<'b>,
         options: &Options,
         plugins: &Plugins,
         state: &mut DocumentState,
@@ -369,7 +371,7 @@ impl HandlebarsRenderer<'_> {
             if !text.chars().any(|c| c.is_alphanumeric() || c == '_') {
                 return None;
             }
-            let id = state.anchorizer.anchorize(text.clone());
+            let id = state.anchorizer.anchorize(&text);
             state.toc.push(TocEntry {
                 level,
                 id: id.clone(),

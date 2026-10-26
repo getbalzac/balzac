@@ -101,7 +101,7 @@ pub fn build_comrak_options(markdown: &MarkdownConfig) -> Options<'static> {
     options.extension.autolink = true;
     options.extension.tasklist = true;
     options.extension.footnotes = markdown.footnotes;
-    options.render.unsafe_ = true;
+    options.render.r#unsafe = true;
 
     options
 }
