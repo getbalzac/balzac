@@ -776,7 +776,45 @@ Sitemap metadata is read when pages are discovered, before the `render_before` h
 The [Benchmark workflow](.github/workflows/benchmark.yml) times the latest balzac, [Zola](https://www.getzola.org/) and [Cobalt](https://cobalt-org.github.io/) releases building the same generated blog. It runs after each release and updates the results below; it can also be run from the Actions tab. Adding the `bench` label to a pull request benchmarks its build against them too: the results are posted in a comment (updated on later runs) and the label is removed, so it can be added again.
 
 <!-- benchmark:start -->
-Results are added here after the next release.
+Last run on 2026-10-26.
+
+| Tool | Version |
+| ---- | ------- |
+| balzac | 0.1.12 |
+| zola | 0.23.6 |
+| cobalt | 0.20.4 |
+
+Each site has the given number of markdown posts (headings, lists, a table, a highlighted Rust code block), a page per post and an index listing them all. Output is deleted before every build. 10 timed runs after 2 warmup runs, on `Linux x86_64` with 4 CPUs. Changes are relative to the released balzac.
+
+### 100 posts
+
+| Command | Mean Wall Time [ms] | Change | Factor |
+|:---|---:|---:|:---|
+| `balzac` | 133.7 ± 1.8 |  |  |
+| `zola` | 171.9 ± 2.3 | +28.5% |  |
+| `cobalt` | 153.0 ± 5.5 | +14.4% |  |
+
+Peak memory: balzac 34.3 MiB, zola 60.0 MiB, cobalt 34.1 MiB
+
+### 1000 posts
+
+| Command | Mean Wall Time [ms] | Change | Factor |
+|:---|---:|---:|:---|
+| `balzac` | 818.8 ± 65.3 |  |  |
+| `zola` | 1078.7 ± 19.4 | +31.7% | (1.3x slower) |
+| `cobalt` | 2147.3 ± 61.6 | +162.2% | (2.6x slower) |
+
+Peak memory: balzac 140.5 MiB, zola 94.2 MiB, cobalt 72.6 MiB
+
+### 2500 posts
+
+| Command | Mean Wall Time [s] | Change | Factor |
+|:---|---:|---:|:---|
+| `balzac` | 1.865 ± 0.014 |  |  |
+| `zola` | 2.627 ± 0.022 | +40.9% | (1.4x slower) |
+| `cobalt` | 14.377 ± 1.847 | +671.0% | (7.7x slower) |
+
+Peak memory: balzac 317.4 MiB, zola 151.4 MiB, cobalt 137.1 MiB
 <!-- benchmark:end -->
 
 To run it locally with `balzac`, `zola`, `cobalt` and [hyperfine](https://github.com/sharkdp/hyperfine) 2.x on your `PATH`:
