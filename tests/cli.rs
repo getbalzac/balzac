@@ -412,3 +412,115 @@ fn test_dev_keeps_serving_after_broken_template() {
         body.contains("<h1>fixed</h1>") && body.contains("const buildError=null;")
     });
 }
+
+/// A project with `[assets] fingerprint = true` and `manifest = true`, Vite
+/// enabled, and a page linking to a stylesheet that references an image.
+fn setup_fingerprinted_project() -> TempDir {
+    let project = setup_project("<h1>Title</h1>");
+    let root = project.path();
+    fs::write(
+        root.join("balzac.toml"),
+        "output_directory = \"./dist\"\n\
+         [assets]\nfingerprint = true\nmanifest = true\n\
+         [bundler.vite]\nenabled = true\nmanifest_path = \"vite-manifest.json\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("vite-manifest.json"),
+        r#"{"main.js": {"file": "assets/main-123.js"}}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("assets/css")).unwrap();
+    fs::create_dir_all(root.join("assets/img")).unwrap();
+    fs::write(root.join("assets/img/logo.png"), "hello").unwrap();
+    fs::write(
+        root.join("assets/css/site.css"),
+        "h1{background:url(\"../img/logo.png\")}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.hbs"),
+        "<link href=\"{{asset \"css/site.css\"}}\"><script src=\"{{vite_url \"main.js\"}}\"></script>",
+    )
+    .unwrap();
+    project
+}
+
+#[test]
+fn test_build_fingerprints_assets() {
+    let project = setup_fingerprinted_project();
+    let root = project.path();
+
+    let (code, logs) = build_logs(root);
+    assert_eq!(code, Some(0), "{logs}");
+
+    // sha256("hello") starts with 2cf24dba
+    let css = "h1{background:url(\"../img/logo.2cf24dba.png\")}";
+    let css_name = fs::read_dir(root.join("dist/assets/css"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        css_name.len(),
+        1,
+        "only the fingerprinted copy: {css_name:?}"
+    );
+    let css_name = &css_name[0];
+    let hash = css_name
+        .strip_prefix("site.")
+        .and_then(|rest| rest.strip_suffix(".css"));
+    assert!(
+        hash.is_some_and(|hash| hash.len() == 8 && hash.chars().all(|c| c.is_ascii_hexdigit())),
+        "{css_name}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("dist/assets/css").join(css_name)).unwrap(),
+        css
+    );
+    assert!(root.join("dist/assets/img/logo.2cf24dba.png").is_file());
+    assert!(!root.join("dist/assets/img/logo.png").exists());
+
+    let index = fs::read_to_string(root.join("dist/index.html")).unwrap();
+    assert_eq!(
+        index,
+        format!(
+            "<link href=\"/assets/css/{css_name}\"><script src=\"assets/main-123.js\"></script>"
+        )
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("dist/assets/manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        manifest,
+        serde_json::json!({
+            "css/site.css": format!("css/{css_name}"),
+            "img/logo.png": "img/logo.2cf24dba.png",
+        })
+    );
+}
+
+#[test]
+fn test_dev_serves_assets_unfingerprinted() {
+    let project = setup_fingerprinted_project();
+    let root = project.path();
+    let port = free_port();
+    let mut server = DevServer(
+        Command::new(BALZAC)
+            .args(["dev", "--port", &port.to_string()])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+
+    wait_for(&mut server, port, "/", |body| {
+        body.contains("<link href=\"/assets/css/site.css\">")
+            && body.contains("http://127.0.0.1:5173/main.js")
+    });
+    wait_for(&mut server, port, "/assets/css/site.css", |body| {
+        body.ends_with("h1{background:url(\"../img/logo.png\")}")
+    });
+    assert!(!root.join("dist/assets/manifest.json").exists());
+}
