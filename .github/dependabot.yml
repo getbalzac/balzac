@@ -1,0 +1,35 @@
+# Commits use `chore(deps…)` so git-cliff leaves them out of the changelog (see cliff.toml).
+#
+# npm is intentionally not listed: npm/ only depends on our own @balzac/*
+# platform packages, pinned to 0.0.0 placeholders that npm/scripts/prepare.mjs
+# rewrites at publish time, and example/ is a demo that isn't built in CI.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # majors (and 0.x minors that need a Cargo.toml edit) still get their own PRs
+      cargo:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    # Both files are generated: release.yml by `dist generate` (dist-workspace.toml),
+    # which fails `dist plan` in CI if it was edited by hand, and janitor.yml by
+    # Janitor. Bump their actions by upgrading the generator instead.
+    exclude-paths:
+      - .github/workflows/release.yml
+      - .github/workflows/janitor.yml
+    groups:
+      github-actions:
+        patterns: ["*"]
