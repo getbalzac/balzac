@@ -18,7 +18,8 @@ fn main() {
             if sub_matches.get_flag("feed") {
                 features.push(InitFeature::Feed);
             }
-            cli::init(&path, &features);
+            let template = sub_matches.get_one::<String>("template");
+            cli::init(&path, &features, template.map(String::as_str));
         }
         Some(("build", sub_matches)) => {
             let path = get_path_arg(sub_matches, "root");
@@ -97,6 +98,11 @@ fn command() -> clap::Command {
                     clap::arg!(--feed)
                         .help("Include RSS/Atom feed configuration")
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    clap::arg!(--template <REPOSITORY>)
+                        .help("Git repository to copy the project from instead of the built-in starter")
+                        .conflicts_with_all(["sitemap", "feed"]),
                 ),
         )
         .subcommand(

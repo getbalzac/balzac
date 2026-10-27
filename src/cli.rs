@@ -14,7 +14,9 @@ use crate::{
     write_feeds, write_robots, write_sitemap,
 };
 
-pub fn init(path: &Path, features: &[InitFeature]) {
+/// Creates a project at `path`: from the git repository `template` when
+/// given, otherwise from the embedded starter site.
+pub fn init(path: &Path, features: &[InitFeature], template: Option<&str>) {
     log::info!("Initializing new balzac project at {}", path.display());
 
     if !path.exists()
@@ -24,6 +26,32 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         std::process::exit(1);
     }
 
+    if let Some(template) = template {
+        init_from_template(path, template);
+        log::info!("Project initialized successfully!");
+        return;
+    }
+
+    create_config(path, features);
+
+    let directories = ["pages", "layouts", "partials", "assets", "content", "tags"];
+    for dir in &directories {
+        let dir_path = path.join(dir);
+        if !dir_path.exists() {
+            if let Err(e) = fs::create_dir_all(&dir_path) {
+                eprintln!("Error: Could not create {dir} directory: {e}");
+                std::process::exit(1);
+            }
+            log::info!("Created directory: {dir}");
+        }
+    }
+
+    write_starter_files(path);
+
+    log::info!("Project initialized successfully!");
+}
+
+fn create_config(path: &Path, features: &[InitFeature]) {
     let features = if features.is_empty() {
         None
     } else {
@@ -48,22 +76,102 @@ pub fn init(path: &Path, features: &[InitFeature]) {
             std::process::exit(1);
         }
     }
+}
 
-    let directories = ["pages", "layouts", "partials", "assets", "content", "tags"];
-    for dir in &directories {
-        let dir_path = path.join(dir);
-        if !dir_path.exists() {
-            if let Err(e) = fs::create_dir_all(&dir_path) {
-                eprintln!("Error: Could not create {dir} directory: {e}");
-                std::process::exit(1);
-            }
-            log::info!("Created directory: {dir}");
-        }
+/// Clones `template` with `git` into a temporary directory and copies its
+/// files (without `.git`) into `path`, keeping files that already exist. A
+/// default `balzac.toml` is created when the template has none.
+fn init_from_template(path: &Path, template: &str) {
+    let config_path = path.join("balzac.toml");
+    if config_path.exists() {
+        eprintln!(
+            "Error: balzac.toml already exists at {}",
+            config_path.display()
+        );
+        std::process::exit(1);
     }
 
-    write_starter_files(path);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let clone_directory =
+        std::env::temp_dir().join(format!("balzac-template-{}-{nanos}", std::process::id()));
 
-    log::info!("Project initialized successfully!");
+    log::info!("Cloning template {template}");
+    let status = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", "--quiet", "--", template])
+        .arg(&clone_directory)
+        .status();
+    let copied = match status {
+        Ok(status) if status.success() => copy_template(&clone_directory, path, Path::new(""))
+            .map_err(|e| format!("Could not copy template files: {e}")),
+        Ok(status) => Err(format!("git clone of {template} failed ({status})")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err("git is required to use --template, but it was not found".to_string())
+        }
+        Err(e) => Err(format!("Could not run git: {e}")),
+    };
+
+    if clone_directory.exists()
+        && let Err(e) = fs::remove_dir_all(&clone_directory)
+    {
+        log::warn!(
+            "Could not remove temporary clone {}: {e}",
+            clone_directory.display()
+        );
+    }
+
+    if let Err(message) = copied {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+
+    if !config_path.exists() {
+        create_config(path, &[]);
+    }
+}
+
+/// Copies `source/relative` into `destination/relative` recursively, skipping
+/// the top-level `.git` directory and files that already exist. Symlinks are
+/// recreated as symlinks on Unix and skipped elsewhere.
+fn copy_template(source: &Path, destination: &Path, relative: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination.join(relative))?;
+    for entry in fs::read_dir(source.join(relative))? {
+        let entry = entry?;
+        let relative_path = relative.join(entry.file_name());
+        if relative_path == Path::new(".git") {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_template(source, destination, &relative_path)?;
+            continue;
+        }
+        let target = destination.join(&relative_path);
+        // `symlink_metadata` so a dangling symlink also counts as existing.
+        if fs::symlink_metadata(&target).is_ok() {
+            log::info!("Skipped {}: file already exists", relative_path.display());
+            continue;
+        }
+        if file_type.is_symlink() {
+            // Recreate symlinks rather than copying their target, which fails
+            // for symlinks to directories.
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
+                log::info!("Created {} (symlink)", relative_path.display());
+            }
+            #[cfg(not(unix))]
+            log::warn!(
+                "Skipped {}: symlinks in templates are only supported on Unix",
+                relative_path.display()
+            );
+            continue;
+        }
+        fs::copy(entry.path(), &target)?;
+        log::info!("Created {}", relative_path.display());
+    }
+    Ok(())
 }
 
 /// Files written by `balzac init` so a new project builds to a working site,

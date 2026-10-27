@@ -673,3 +673,112 @@ fn test_new_rejects_invalid_collection_and_warns_without_template() {
     assert!(root.join("content/notes/hello.md").exists());
     assert!(logs.contains("details.hbs does not exist"), "{logs}");
 }
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "user.name=balzac",
+            "-c",
+            "user.email=balzac@example.com",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn test_init_from_template_repository() {
+    let template = TempDir::new().unwrap();
+    let template_root = template.path();
+    fs::create_dir_all(template_root.join("pages/docs")).unwrap();
+    fs::write(
+        template_root.join("pages/index.hbs"),
+        "<h1>From template</h1>",
+    )
+    .unwrap();
+    fs::write(template_root.join("pages/docs/intro.hbs"), "<p>Intro</p>").unwrap();
+    git(template_root, &["init", "--quiet"]);
+    git(template_root, &["add", "."]);
+    git(template_root, &["commit", "--quiet", "-m", "template"]);
+
+    let project = TempDir::new().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("pages/docs")).unwrap();
+    fs::write(root.join("pages/docs/intro.hbs"), "mine").unwrap();
+
+    let (code, logs) = run(
+        root,
+        &["init", "--template", template_root.to_str().unwrap()],
+    );
+
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(!root.join(".git").exists());
+    assert!(root.join("balzac.toml").exists(), "{logs}");
+    assert!(!root.join("layouts/base.hbs").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("pages/docs/intro.hbs")).unwrap(),
+        "mine"
+    );
+    let (code, logs) = build_logs(root);
+    assert_eq!(code, Some(0), "{logs}");
+    assert_eq!(
+        fs::read_to_string(root.join("dist/index.html")).unwrap(),
+        "<h1>From template</h1>"
+    );
+}
+
+#[test]
+fn test_init_from_missing_template_fails() {
+    let project = TempDir::new().unwrap();
+    let missing = project.path().join("missing-template");
+
+    let (code, logs) = run(
+        project.path(),
+        &["init", "--template", missing.to_str().unwrap()],
+    );
+
+    assert_eq!(code, Some(1), "{logs}");
+    assert!(logs.contains("git clone of"), "{logs}");
+    assert!(!project.path().join("balzac.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_init_from_template_keeps_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let template = TempDir::new().unwrap();
+    let template_root = template.path();
+    fs::create_dir_all(template_root.join("pages")).unwrap();
+    fs::create_dir_all(template_root.join("shared/docs")).unwrap();
+    fs::write(template_root.join("pages/index.hbs"), "<h1>Home</h1>").unwrap();
+    fs::write(template_root.join("shared/docs/intro.md"), "Intro").unwrap();
+    symlink("../shared/docs", template_root.join("pages/docs")).unwrap();
+    symlink("shared/docs/intro.md", template_root.join("intro.md")).unwrap();
+    git(template_root, &["init", "--quiet"]);
+    git(template_root, &["add", "."]);
+    git(template_root, &["commit", "--quiet", "-m", "template"]);
+
+    let project = TempDir::new().unwrap();
+    let root = project.path();
+    let (code, logs) = run(
+        root,
+        &["init", "--template", template_root.to_str().unwrap()],
+    );
+
+    assert_eq!(code, Some(0), "{logs}");
+    assert_eq!(
+        fs::read_link(root.join("pages/docs")).unwrap(),
+        Path::new("../shared/docs")
+    );
+    assert_eq!(
+        fs::read_link(root.join("intro.md")).unwrap(),
+        Path::new("shared/docs/intro.md")
+    );
+    assert_eq!(fs::read_to_string(root.join("intro.md")).unwrap(), "Intro");
+}

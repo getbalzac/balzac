@@ -72,6 +72,14 @@ balzac init --feed
 
 `balzac init` writes `balzac.toml`, the project directories and a starter site, so `balzac init && balzac build` produces a working site: a layout (`layouts/base.hbs`), a home page listing posts (`pages/index.hbs`), a post template (`pages/posts/details.hbs`), a sample post (`content/posts/hello-world.md`) and a stylesheet (`assets/style.css`). Files that already exist are left untouched.
 
+Create a new project from a template repository instead of the built-in starter:
+
+```sh
+balzac init --template https://github.com/you/your-balzac-template
+```
+
+The repository is cloned with `git` (which must be installed), and its files, except `.git`, are copied into the project directory, again leaving existing files untouched. Symlinks are kept as symlinks (on Windows they're skipped with a warning). When the template has no `balzac.toml`, a default one is created. `--template` can't be combined with `--sitemap` or `--feed`: configure those in the template's `balzac.toml`.
+
 Create a draft in a collection:
 
 ```sh
