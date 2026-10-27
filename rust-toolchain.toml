@@ -1,0 +1,6 @@
+# Toolchain for development, lint CI and releases (dist, release-plz); bump deliberately,
+# together with `rust-version` in Cargo.toml
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

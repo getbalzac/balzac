@@ -8,6 +8,8 @@ on:
             - "**/*.rs"
             - Cargo.toml
             - Cargo.lock
+            - rust-toolchain.toml
+            - .github/workflows/tests.yml
     pull_request:
         branches:
             - master
@@ -15,13 +17,15 @@ on:
             - "**/*.rs"
             - Cargo.toml
             - Cargo.lock
+            - rust-toolchain.toml
+            - .github/workflows/tests.yml
 
 env:
     CARGO_TERM_COLOR: always
 
 jobs:
     build_and_test:
-        name: Rust project - latest
+        name: Rust project - ${{ matrix.toolchain }}
         runs-on: ubuntu-latest
         strategy:
             matrix:
@@ -29,9 +33,12 @@ jobs:
                     - stable
                     - beta
                     - nightly
+        env:
+            # overrides the pin in rust-toolchain.toml
+            RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
         steps:
             - uses: actions/checkout@v4
-            - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+            - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
             - run: cargo build --verbose
             - run: cargo test --verbose
     lint:
@@ -39,7 +46,8 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
-            - run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
+            # installs the pinned toolchain and components from rust-toolchain.toml
+            - run: rustup toolchain install
             - run: cargo fmt --all -- --check
             - run: cargo clippy --all-targets --all-features -- -D warnings
             - run: cargo clippy --all-targets --no-default-features -- -D warnings
