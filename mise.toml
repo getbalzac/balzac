@@ -1,6 +1,10 @@
 [tools]
 lefthook = "latest"
-rust = "latest"
+
+# rust comes from rust-toolchain.toml (the single source of truth, also read by rustup, CI and dist).
+# A `rust` entry here or in a global mise config would export RUSTUP_TOOLCHAIN and override it
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
 
 [hooks]
 postinstall = "lefthook install"

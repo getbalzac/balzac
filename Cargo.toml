@@ -6,6 +6,8 @@ license = "MIT"
 homepage = "https://balzac.rs"
 repository = "https://github.com/getbalzac/balzac"
 edition = "2024"
+# tracks the toolchain pinned in rust-toolchain.toml; bump both together
+rust-version = "1.99"
 readme = "README.md"
 exclude = [
     "dist/*",

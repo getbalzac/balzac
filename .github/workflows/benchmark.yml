@@ -94,7 +94,7 @@ jobs:
               env:
                   SHA: ${{ github.event.pull_request.head.sha }}
               run: |
-                  rustup update stable && rustup default stable
+                  rustup toolchain install
                   cargo build --release --locked
                   echo "BALZAC_PR=$PWD/target/release/balzac" >>"$GITHUB_ENV"
                   echo "BALZAC_PR_VERSION=${SHA:0:7}" >>"$GITHUB_ENV"
