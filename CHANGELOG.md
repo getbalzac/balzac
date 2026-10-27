@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.13] - 2026-10-27
+
+### 🚀 Features
+
+- Fingerprint assets with content hashes for cache busting
+- Add clean and new commands, scaffold a starter site on init
+- *(init)* Add --template to start from a git repository
+- Add `balzac check` for broken internal links and missing assets
+
+### 💼 Other
+
+- Pin Rust toolchain to 1.99.1 and set rust-version to 1.99
+
+### ⚙️ Miscellaneous Tasks
+
+- Add dependabot config for cargo and github actions
+- Update actions/checkout to v7
+- Report test coverage with cargo-llvm-cov
 ## [0.1.12] - 2026-10-26
 
 ### 🐛 Bug Fixes
