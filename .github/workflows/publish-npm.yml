@@ -28,16 +28,16 @@ jobs:
     env:
       PLAN: ${{ inputs.plan }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Fetch dist archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-build-local-*
           path: target/distrib/
           merge-multiple: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
       # trusted publishing needs npm >= 11.5.1
