@@ -113,6 +113,12 @@ balzac clean --root ./my-site
 
 `balzac clean` refuses to remove an output directory that is, or contains, the project root or a source directory (pages, partials, layouts, assets, content, helpers or tags).
 
+Build the site and check it for broken links and missing assets (see [Checking Links](#checking-links)):
+
+```sh
+balzac check
+```
+
 Run the dev server:
 
 ```sh
@@ -407,6 +413,25 @@ Keeps the items of a list whose field equals a value. When the field is a list, 
 ## 404 Page
 
 Create `pages/404.hbs` (or `.html`/`.handlebars`, or `pages/404/index.hbs`) and it is rendered to `dist/404.html` like any other page. Most static hosts (GitHub Pages, Netlify, Cloudflare Pages, ...) serve this file automatically for missing paths. The 404 page is always left out of the sitemap, and `balzac dev` serves it with a `404` status for any path that doesn't exist.
+
+## Checking Links
+
+`balzac check` builds the site like `balzac build`, then scans the output directory for internal links and asset references that point to nothing. Each broken link is printed with its file and line, and the command exits with status 1 if there are any, so it can run in CI:
+
+```text
+dist/index.html:12: broken link "/blog/docs/outro" (/blog/docs/outro not found)
+dist/index.html:14: broken link "/docs/intro" (outside the base_url path /blog/)
+dist/docs/intro.html:3: broken link "#instal" (no id "instal" in docs/intro.html)
+dist/assets/site.css:1: broken link "img/gone.png" (/blog/assets/img/gone.png not found)
+```
+
+- `--no-build` checks the existing output directory instead, e.g. after a build with extra steps; `--no-fragments` skips fragment checks; `--root <PATH>` works like for `build`.
+- Every `.html` and `.css` file of the output directory is scanned: `href` (except on `<base>`), `xlink:href`, `src`, `srcset` and `poster` attributes on any element, `data` on `<object>`, and `url(...)` in stylesheets, `<style>` elements and `style` attributes. Comments, scripts, `<title>` and `<textarea>` are skipped.
+- URLs are resolved the way a static host serves the output, following [`url_style`](#url-style): `/docs/` must be a `docs/index.html`; `/docs` may be a file named `docs`, a `docs/index.html` (hosts redirect to `/docs/`) or, with the default `url_style = "extensionless"`, a `docs.html`. Relative URLs resolve against the page's URL, or its `<base href>` (which `#id` links then point to as well), percent-encoded characters are decoded, query strings are ignored, and file names must match exactly, including case.
+- When `base_url` has a path (`https://example.com/blog/`), root-relative URLs must start with it (`/blog/docs/`), as [`url_for`](#url_for) writes them. Links like `/docs/` or `{{url}}` of a collection item without `url_for` are reported as outside the base path, since they leave the site once it is deployed under `/blog/`.
+- Absolute URLs on the `base_url` origin (`https://example.com/blog/docs/`, from `url_for ... absolute=true`) are checked like root-relative ones. Other absolute URLs (another host, `http://` when `base_url` is `https://`, `mailto:`, `data:`, ...) are external and never fetched; their count is shown in the summary.
+- Fragments (`/docs/intro#setup`, `#setup`) of links to pages must match the `id` of an element (or an `<a name>`) in the target page. Markdown headings only have ids with [`heading_ids`](#heading-ids-and-anchors). `#`, `#top` and text fragments (`#:~:text=`) are always valid, and fragments of links to other files (`doc.pdf#page=2`) are not checked.
+- Links in the sitemap, feeds and `robots.txt`, `@import "file.css"` without `url()`, and URLs built in JavaScript are not checked.
 
 ## Sitemap
 

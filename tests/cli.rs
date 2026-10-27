@@ -782,3 +782,137 @@ fn test_init_from_template_keeps_symlinks() {
     );
     assert_eq!(fs::read_to_string(root.join("intro.md")).unwrap(), "Intro");
 }
+
+fn check(root: &Path, args: &[&str]) -> (Option<i32>, String, String) {
+    let output = Command::new(BALZAC)
+        .arg("check")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn test_check_passes_on_generated_pages() {
+    let project = setup_blog_project(20, |_| String::new());
+
+    let (code, stdout, stderr) = check(project.path(), &[]);
+
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_eq!(stdout, "", "{stderr}");
+    assert!(stderr.contains("No broken links"), "{stderr}");
+}
+
+#[test]
+fn test_check_passes_on_starter_site() {
+    let project = TempDir::new().unwrap();
+    let (code, logs) = run(project.path(), &["init", "--feed", "--sitemap"]);
+    assert_eq!(code, Some(0), "{logs}");
+
+    let (code, stdout, stderr) = check(project.path(), &[]);
+
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert_eq!(stdout, "", "{stderr}");
+}
+
+#[test]
+fn test_check_reports_broken_links() {
+    let project = setup_project("<h1>Title</h1>");
+    let root = project.path();
+    fs::write(
+        root.join("balzac.toml"),
+        "base_url = \"https://example.com/blog/\"\n\n[markdown]\nheading_ids = true\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages/docs")).unwrap();
+    fs::create_dir_all(root.join("assets/img")).unwrap();
+    fs::write(root.join("assets/img/logo.png"), "png").unwrap();
+    fs::write(
+        root.join("assets/site.css"),
+        "a { background: url(img/gone.png) }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.hbs"),
+        r#"<link rel="stylesheet" href="{{url_for "/assets/site.css"}}">
+<a href="{{url_for "/docs/intro#setup"}}">ok</a> <a href="https://example.com/blog/docs/intro">ok</a>
+<img src="assets/img/logo.png" srcset="{{url_for "/assets/img/logo.png"}} 1x, assets/img/logo@2x.png 2x">
+<a href="https://other.example/">external</a> <a href="mailto:me@example.com">mail</a>
+<a href="{{url_for "/docs/outro"}}">missing page</a>
+<a href="/docs/intro">no base path</a>
+<a href="docs/intro#nowhere">missing id</a>
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/docs/intro.hbs"),
+        "{{{markdown \"## Setup\"}}}<a href=\"../../up\">above root</a><a href=\"#setup\">ok</a>",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = check(root, &[]);
+
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert_eq!(
+        stdout,
+        "dist/assets/site.css:1: broken link \"img/gone.png\" (/blog/assets/img/gone.png not found)
+dist/docs/intro.html:2: broken link \"../../up\" (goes above the site root)
+dist/index.html:3: broken link \"assets/img/logo@2x.png\" (/blog/assets/img/logo@2x.png not found)
+dist/index.html:5: broken link \"/blog/docs/outro\" (/blog/docs/outro not found)
+dist/index.html:6: broken link \"/docs/intro\" (outside the base_url path /blog/)
+dist/index.html:7: broken link \"docs/intro#nowhere\" (no id \"nowhere\" in docs/intro.html)
+",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "Found 6 broken links: checked 12 links in 3 files, skipped 2 external links"
+        ),
+        "{stderr}"
+    );
+
+    let (code, stdout, stderr) = check(root, &["--no-build", "--no-fragments"]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(!stdout.contains("nowhere"), "{stdout}");
+}
+
+#[test]
+fn test_check_flags_hand_written_links_to_fingerprinted_assets() {
+    let project = setup_fingerprinted_project();
+    let root = project.path();
+    fs::write(
+        root.join("pages/about.hbs"),
+        "<link href=\"/assets/css/site.css\"><link href=\"{{asset \"css/site.css\"}}\">",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = check(root, &[]);
+
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    // The Vite build is not run here, so its output is missing too.
+    assert_eq!(
+        stdout,
+        "dist/about.html:1: broken link \"/assets/css/site.css\" (/assets/css/site.css not found)
+dist/index.html:1: broken link \"assets/main-123.js\" (/assets/main-123.js not found)
+",
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_check_without_build_needs_output_directory() {
+    let project = setup_project("<h1>Title</h1>");
+
+    let (code, stdout, stderr) = check(project.path(), &["--no-build"]);
+
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("does not exist, run `balzac build` first"),
+        "{stderr}"
+    );
+}

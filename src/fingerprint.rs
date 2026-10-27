@@ -262,6 +262,24 @@ fn rewrite_urls(
     Ok(output)
 }
 
+/// Offset and text of each `url(...)` reference in `css`, e.g. for
+/// `a { background: url("img/a.png") }` the offset of `img/a.png`.
+pub(crate) fn url_references(css: &str) -> Vec<(usize, &str)> {
+    let mut references = Vec::new();
+    let mut position = 0;
+    while let Some(start) = find_url_function(&css[position..]) {
+        position += start + "url(".len();
+        if let Some((offset, length)) = url_reference(&css[position..]) {
+            references.push((
+                position + offset,
+                &css[position + offset..position + offset + length],
+            ));
+            position += offset + length;
+        }
+    }
+    references
+}
+
 /// Byte index of the next `url(` (any case) that is not the end of a longer name.
 fn find_url_function(css: &str) -> Option<usize> {
     let bytes = css.as_bytes();

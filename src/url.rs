@@ -60,6 +60,40 @@ pub fn page_location(config: &ResolvedConfig, route: &[&str]) -> Option<PageLoca
     })
 }
 
+/// Decodes `%XX` escapes (e.g. non-ASCII taxonomy terms); `None` when malformed.
+#[must_use]
+pub fn percent_decode(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// Splits `base_url` into its origin and its path without trailing slash:
+/// `https://example.com/blog/` -> (`https://example.com`, `/blog`). The origin
+/// is empty when `base_url` has no scheme.
+#[must_use]
+pub fn split_base_url(base_url: &str) -> (&str, &str) {
+    let base = base_url.trim_end_matches('/');
+    let path_start = base.split_once("://").map_or(0, |(scheme, rest)| {
+        scheme.len() + "://".len() + rest.find('/').unwrap_or(rest.len())
+    });
+    base.split_at(path_start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +187,23 @@ mod tests {
                 PathBuf::from("/site/dist/posts/404/index.html")
             )
         );
+    }
+
+    #[test]
+    fn test_split_base_url() {
+        assert_eq!(
+            split_base_url("https://example.com/blog/"),
+            ("https://example.com", "/blog")
+        );
+        assert_eq!(
+            split_base_url("https://example.com"),
+            ("https://example.com", "")
+        );
+        assert_eq!(
+            split_base_url("https://example.com/"),
+            ("https://example.com", "")
+        );
+        assert_eq!(split_base_url("/docs/"), ("", "/docs"));
     }
 
     #[test]
