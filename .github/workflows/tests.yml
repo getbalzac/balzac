@@ -37,7 +37,7 @@ jobs:
             # overrides the pin in rust-toolchain.toml
             RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
             - run: cargo build --verbose
             - run: cargo test --verbose
@@ -45,7 +45,7 @@ jobs:
         name: Lint
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
             # installs the pinned toolchain and components from rust-toolchain.toml
             - run: rustup toolchain install
             - run: cargo fmt --all -- --check
