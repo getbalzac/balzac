@@ -70,6 +70,16 @@ Create a new project with RSS/Atom feed support enabled:
 balzac init --feed
 ```
 
+`balzac init` writes `balzac.toml`, the project directories and a starter site, so `balzac init && balzac build` produces a working site: a layout (`layouts/base.hbs`), a home page listing posts (`pages/index.hbs`), a post template (`pages/posts/details.hbs`), a sample post (`content/posts/hello-world.md`) and a stylesheet (`assets/style.css`). Files that already exist are left untouched.
+
+Create a draft in a collection:
+
+```sh
+balzac new posts "My first post"
+```
+
+This writes `content/posts/my-first-post.md` (the file name is the slugified title) with a `title`, today's `date` (UTC) and `draft: true`. Drafts are rendered by `balzac dev` but skipped by `balzac build`: remove `draft: true` to publish the item. The command fails if the file already exists, and warns when the collection has no template yet (`pages/posts/details.hbs` here). Use `--root <PATH>` to run it against another project.
+
 Build the site:
 
 ```sh
@@ -85,6 +95,15 @@ Build a site from a specific root:
 ```sh
 balzac build --root ./my-site
 ```
+
+Remove the output directory (`output_directory`, `./dist` by default):
+
+```sh
+balzac clean
+balzac clean --root ./my-site
+```
+
+`balzac clean` refuses to remove an output directory that is, or contains, the project root or a source directory (pages, partials, layouts, assets, content, helpers or tags).
 
 Run the dev server:
 

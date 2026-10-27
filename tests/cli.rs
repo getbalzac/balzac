@@ -524,3 +524,152 @@ fn test_dev_serves_assets_unfingerprinted() {
     });
     assert!(!root.join("dist/assets/manifest.json").exists());
 }
+
+/// Runs `balzac` with `args` in `dir`, returning its exit code and logs.
+fn run(dir: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let output = Command::new(BALZAC)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output.status.code(), logs)
+}
+
+#[test]
+fn test_init_starter_builds_working_site() {
+    let project = TempDir::new().unwrap();
+    let root = project.path();
+
+    let (code, logs) = run(root, &["init", "--feed"]);
+    assert_eq!(code, Some(0), "{logs}");
+    let (code, logs) = build_logs(root);
+    assert_eq!(code, Some(0), "{logs}");
+
+    let index = fs::read_to_string(root.join("dist/index.html")).unwrap();
+    assert!(index.contains("<a href=\"/posts/hello-world\">Hello, world</a>"));
+    assert!(index.contains("href=\"/assets/style.css\""));
+    let post = fs::read_to_string(root.join("dist/posts/hello-world.html")).unwrap();
+    assert!(post.contains("<h1>Hello, world</h1>"), "{post}");
+    assert!(post.contains("<title>Hello, world · My Balzac site</title>"));
+    assert!(root.join("dist/assets/style.css").exists());
+    assert!(root.join("dist/posts/atom.xml").exists());
+}
+
+#[test]
+fn test_init_keeps_existing_files() {
+    let project = TempDir::new().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.hbs"), "mine").unwrap();
+
+    let (code, logs) = run(root, &["init"]);
+
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(logs.contains("Skipped pages/index.hbs"), "{logs}");
+    assert_eq!(
+        fs::read_to_string(root.join("pages/index.hbs")).unwrap(),
+        "mine"
+    );
+    assert!(root.join("layouts/base.hbs").exists());
+}
+
+#[test]
+fn test_clean_removes_output_directory() {
+    let project = setup_project("<h1>Title</h1>");
+    let root = project.path();
+    let (code, logs) = build_logs(root);
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(root.join("dist/index.html").exists());
+
+    let elsewhere = TempDir::new().unwrap();
+    let root_arg = root.to_str().unwrap();
+    let (code, logs) = run(elsewhere.path(), &["clean", "--root", root_arg]);
+
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(!root.join("dist").exists());
+    assert!(root.join("pages/index.hbs").exists());
+
+    // Nothing left to clean is not an error.
+    let (code, logs) = run(root, &["clean"]);
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(logs.contains("nothing to clean"), "{logs}");
+}
+
+#[test]
+fn test_clean_refuses_to_remove_project_or_sources() {
+    for (config, protected) in [
+        ("output_directory = \".\"\n", "project root"),
+        ("output_directory = \"./pages\"\n", "pages directory"),
+        (
+            "output_directory = \"./site\"\ncontent_directory = \"./site/content\"\n",
+            "content directory",
+        ),
+        ("output_directory = \"..\"\n", "project root"),
+    ] {
+        let project = TempDir::new().unwrap();
+        let root = project.path().join("project");
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("site/content")).unwrap();
+        fs::write(root.join("pages/index.hbs"), "hi").unwrap();
+        fs::write(root.join("balzac.toml"), config).unwrap();
+
+        let (code, logs) = run(&root, &["clean"]);
+
+        assert_eq!(code, Some(1), "{config}: {logs}");
+        assert!(
+            logs.contains(&format!("contains the {protected}")),
+            "{logs}"
+        );
+        assert!(root.join("pages/index.hbs").exists(), "{config}");
+        assert!(root.join("site/content").exists(), "{config}");
+    }
+}
+
+#[test]
+fn test_new_creates_draft_content_file() {
+    let project = setup_collection_project("<h1>{{fm.title}}</h1>");
+    let root = project.path();
+
+    let (code, logs) = run(root, &["new", "posts", "My \"Next\" Post: Part 2"]);
+
+    assert_eq!(code, Some(0), "{logs}");
+    let content = fs::read_to_string(root.join("content/posts/my-next-post-part-2.md")).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines[0], "---");
+    assert_eq!(lines[1], "title: \"My \\\"Next\\\" Post: Part 2\"");
+    assert!(lines[2].starts_with("date: 20"), "{content}");
+    assert_eq!(lines[3], "draft: true");
+    assert_eq!(lines[4], "---");
+
+    // Drafts are skipped by `balzac build`.
+    let (code, logs) = build_logs(root);
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(root.join("dist/posts/hello.html").exists());
+    assert!(!root.join("dist/posts/my-next-post-part-2.html").exists());
+
+    let (code, logs) = run(root, &["new", "posts", "My Next Post, Part 2"]);
+    assert_eq!(code, Some(1), "{logs}");
+    assert!(logs.contains("already exists"), "{logs}");
+}
+
+#[test]
+fn test_new_rejects_invalid_collection_and_warns_without_template() {
+    let project = setup_project("<h1>Title</h1>");
+    let root = project.path();
+
+    for collection in ["../posts", "a/b", ".", ""] {
+        let (code, logs) = run(root, &["new", collection, "Hello"]);
+        assert_eq!(code, Some(1), "{collection}: {logs}");
+        assert!(logs.contains("Invalid collection name"), "{logs}");
+    }
+
+    let (code, logs) = run(root, &["new", "notes", "Hello"]);
+    assert_eq!(code, Some(0), "{logs}");
+    assert!(root.join("content/notes/hello.md").exists());
+    assert!(logs.contains("details.hbs does not exist"), "{logs}");
+}

@@ -5,7 +5,7 @@ use crate::config::{Config, CreateConfigError, InitFeature, ResolvedConfig};
 use crate::context::SiteContext;
 use crate::dev;
 use crate::hooks::{HookExecutor, HookPhase};
-use crate::listing::render_listing_pages;
+use crate::listing::{render_listing_pages, slugify};
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::SitePages;
@@ -61,7 +61,187 @@ pub fn init(path: &Path, features: &[InitFeature]) {
         }
     }
 
+    write_starter_files(path);
+
     log::info!("Project initialized successfully!");
+}
+
+/// Files written by `balzac init` so a new project builds to a working site,
+/// relative to the project root. `{{date}}` in the sample post is replaced
+/// with today's date.
+const STARTER_FILES: [(&str, &str); 5] = [
+    ("layouts/base.hbs", include_str!("starter/layouts/base.hbs")),
+    ("pages/index.hbs", include_str!("starter/pages/index.hbs")),
+    (
+        "pages/posts/details.hbs",
+        include_str!("starter/pages/posts/details.hbs"),
+    ),
+    (
+        "content/posts/hello-world.md",
+        include_str!("starter/content/posts/hello-world.md"),
+    ),
+    ("assets/style.css", include_str!("starter/assets/style.css")),
+];
+
+/// Writes the starter files, leaving any file that already exists untouched.
+fn write_starter_files(root: &Path) {
+    let today = today();
+    for (relative_path, content) in STARTER_FILES {
+        let file_path = root.join(relative_path);
+        if file_path.exists() {
+            log::info!("Skipped {relative_path}: file already exists");
+            continue;
+        }
+        let content = content.replace("{{date}}", &today);
+        let written = file_path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&file_path, content));
+        if let Err(e) = written {
+            eprintln!("Error: Could not create {relative_path}: {e}");
+            std::process::exit(1);
+        }
+        log::info!("Created {relative_path}");
+    }
+}
+
+/// Today's date in UTC as `YYYY-MM-DD`, the format collection items are
+/// sorted by.
+fn today() -> String {
+    jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .to_string()
+}
+
+/// Creates `<content_directory>/<collection>/<slug>.md` with a draft
+/// frontmatter, the slug being derived from `title`.
+pub fn new_content(root: &Path, collection: &str, title: &str) {
+    let parsed_config =
+        Config::load(root).unwrap_or_else(|e| fail("Error loading configuration", &e));
+    let resolved_config = parsed_config.resolve(root);
+
+    if !is_single_path_segment(collection) {
+        log::error!(
+            "Invalid collection name {collection:?}: it must be a single folder name, like \"posts\""
+        );
+        std::process::exit(1);
+    }
+
+    let slug = slugify(title);
+    if slug.is_empty() {
+        log::error!("Could not derive a file name from the title {title:?}");
+        std::process::exit(1);
+    }
+
+    let collection_directory = resolved_config.content_directory.join(collection);
+    let file_path = collection_directory.join(format!("{slug}.md"));
+    if file_path.exists() {
+        log::error!("{} already exists", file_path.display());
+        std::process::exit(1);
+    }
+
+    // A JSON string is a valid double-quoted YAML scalar, so any title is
+    // escaped correctly.
+    let quoted_title =
+        serde_json::to_string(title).expect("serializing a string to JSON cannot fail");
+    let content = format!(
+        "---\ntitle: {quoted_title}\ndate: {}\ndraft: true\n---\n\n",
+        today()
+    );
+
+    if let Err(e) =
+        fs::create_dir_all(&collection_directory).and_then(|()| fs::write(&file_path, content))
+    {
+        log::error!("Could not create {}: {e}", file_path.display());
+        std::process::exit(1);
+    }
+    log::info!("Created {}", file_path.display());
+
+    let template_path = resolved_config.collection_template_path(collection);
+    if !template_path.exists() {
+        log::warn!(
+            "{} does not exist: items of the {collection} collection are not rendered until it is created",
+            template_path.display()
+        );
+    }
+}
+
+fn is_single_path_segment(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) && !name.contains(['/', '\\'])
+}
+
+/// Removes the output directory, refusing to when it is or contains the
+/// project root or a source directory.
+pub fn clean(root: &Path) {
+    let parsed_config =
+        Config::load(root).unwrap_or_else(|e| fail("Error loading configuration", &e));
+    let resolved_config = parsed_config.resolve(root);
+    let output_directory = &resolved_config.output_directory;
+
+    let output = match fs::canonicalize(output_directory) {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::info!(
+                "Output directory {} does not exist, nothing to clean",
+                output_directory.display()
+            );
+            return;
+        }
+        Err(e) => {
+            log::error!(
+                "Could not resolve output directory {}: {e}",
+                output_directory.display()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    if !output.is_dir() {
+        log::error!(
+            "Output directory {} is not a directory, refusing to remove it",
+            output_directory.display()
+        );
+        std::process::exit(1);
+    }
+
+    let protected = [
+        ("project root", &resolved_config.root_directory),
+        ("pages directory", &resolved_config.pages_directory),
+        ("partials directory", &resolved_config.partials_directory),
+        ("layouts directory", &resolved_config.layouts_directory),
+        ("assets directory", &resolved_config.assets_directory),
+        ("content directory", &resolved_config.content_directory),
+        ("helpers directory", &resolved_config.helpers_directory),
+        ("tags directory", &resolved_config.tags_directory),
+    ];
+    for (name, directory) in protected {
+        // A directory that does not exist cannot be removed with the output.
+        let Ok(directory) = fs::canonicalize(directory) else {
+            continue;
+        };
+        if directory.starts_with(&output) {
+            log::error!(
+                "Output directory {} contains the {name} ({}), refusing to remove it",
+                output_directory.display(),
+                directory.display()
+            );
+            std::process::exit(1);
+        }
+    }
+
+    if let Err(e) = fs::remove_dir_all(output_directory) {
+        log::error!(
+            "Could not remove output directory {}: {e}",
+            output_directory.display()
+        );
+        std::process::exit(1);
+    }
+    log::info!("Removed output directory {}", output_directory.display());
 }
 
 pub fn build(path: &Path) {
