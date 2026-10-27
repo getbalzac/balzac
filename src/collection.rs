@@ -2,6 +2,7 @@ use comrak::Options;
 
 use crate::config::MarkdownConfig;
 use serde_json::{Value, json};
+use serde_saphyr::options::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
 
 pub struct MarkdownOutput {
     pub content: String,
@@ -13,18 +14,18 @@ pub struct MarkdownOutput {
 /// Returns `None` and the untouched input when there is no frontmatter block.
 pub fn parse_template_frontmatter(
     file_content: &str,
-) -> Result<(Option<Value>, &str), serde_yaml::Error> {
+) -> Result<(Option<Value>, &str), serde_saphyr::Error> {
     match extract_frontmatter(file_content) {
-        (Some(yaml), body) => Ok((Some(serde_yaml::from_str(yaml)?), body)),
+        (Some(yaml), body) => Ok((Some(parse_yaml(yaml)?), body)),
         (None, _) => Ok((None, file_content)),
     }
 }
 
-pub fn parse_markdown(file_content: &str) -> Result<MarkdownOutput, serde_yaml::Error> {
+pub fn parse_markdown(file_content: &str) -> Result<MarkdownOutput, serde_saphyr::Error> {
     let (frontmatter_yaml, markdown_content) = extract_frontmatter(file_content);
 
     let fm = match frontmatter_yaml {
-        Some(yaml) => serde_yaml::from_str(yaml)?,
+        Some(yaml) => parse_yaml(yaml)?,
         None => json!(null),
     };
 
@@ -32,6 +33,22 @@ pub fn parse_markdown(file_content: &str) -> Result<MarkdownOutput, serde_yaml::
         content: markdown_content.to_string(),
         fm,
     })
+}
+
+/// Parses frontmatter with the scalar rules `serde_yaml` 0.9 used.
+fn parse_yaml(yaml: &str) -> Result<Value, serde_saphyr::Error> {
+    serde_saphyr::from_str_with_options(
+        yaml,
+        serde_saphyr::options! {
+            // `yes`/`no`/`on`/`off` stay strings
+            strict_booleans: true,
+            duplicate_keys: DuplicateKeyPolicy::LastWins,
+            merge_keys: MergeKeyPolicy::AsOrdinary,
+            // `.inf`/`.nan` become null instead of failing the page
+            non_finite_float_policy: NonFiniteFloatPolicy::PassThrough,
+            with_snippet: false,
+        },
+    )
 }
 
 fn extract_frontmatter(content: &str) -> (Option<&str>, &str) {
@@ -204,5 +221,67 @@ mod tests {
         assert_eq!(result.fm["title"], "Hello World");
         assert_eq!(result.fm["count"], 42);
         assert!(result.content.contains("# Heading"));
+    }
+
+    fn fm(yaml: &str) -> Value {
+        parse_markdown(&format!("---\n{yaml}\n---\nbody"))
+            .unwrap()
+            .fm
+    }
+
+    #[test]
+    fn test_frontmatter_yaml_1_1_booleans_stay_strings() {
+        let fm = fm("a: yes\nb: no\nc: on\nd: off\ne: y\nf: NO\ng: true\nh: FALSE");
+        assert_eq!(
+            fm,
+            json!({"a": "yes", "b": "no", "c": "on", "d": "off", "e": "y", "f": "NO", "g": true, "h": false})
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_dates_and_times_stay_strings() {
+        let fm = fm("date: 2024-01-15\nat: 2024-01-15T10:00:00Z\ntime: 12:30:45");
+        assert_eq!(
+            fm,
+            json!({"date": "2024-01-15", "at": "2024-01-15T10:00:00Z", "time": "12:30:45"})
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_duplicate_key_keeps_last_value() {
+        assert_eq!(fm("a: 1\na: 2"), json!({"a": 2}));
+    }
+
+    #[test]
+    fn test_frontmatter_merge_key_is_an_ordinary_key() {
+        let fm = fm("base: &b {x: 1}\nmerged:\n  <<: *b\n  y: 3");
+        assert_eq!(fm["merged"], json!({"<<": {"x": 1}, "y": 3}));
+    }
+
+    #[test]
+    fn test_frontmatter_non_finite_floats_are_null() {
+        assert_eq!(fm("a: .inf\nb: .nan"), json!({"a": null, "b": null}));
+    }
+
+    #[test]
+    fn test_frontmatter_numbers_nulls_and_aliases() {
+        let fm = fm("a: 0o17\nb: 0x1F\nc: 1.10\nd: ~\ne:\nf: &x [1]\ng: *x\n1: one");
+        assert_eq!(
+            fm,
+            json!({"a": 15, "b": 31, "c": 1.1, "d": null, "e": null, "f": [1], "g": [1], "1": "one"})
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_comment_only_block_is_null() {
+        assert_eq!(fm("# draft"), json!(null));
+    }
+
+    #[test]
+    fn test_parse_markdown_invalid_yaml_reports_location() {
+        let input = "---\ntitle: Test\ntags: [unclosed\ndate: 2024\n---\nbody";
+        let message = parse_markdown(input).err().unwrap().to_string();
+        assert!(message.contains("line 3"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
     }
 }
