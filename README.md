@@ -882,3 +882,11 @@ bench/run.sh 100 1000   # number of posts per site; results go to ./results
 ## Development
 
 All required tooling can be installed using [mise](https://mise.jdx.dev/) with `mise install`
+
+Test coverage of both feature sets (default and `--no-default-features`), merged into one HTML report:
+
+```sh
+mise run coverage
+```
+
+CI runs the same on pushes and pull requests that change Rust code, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` or the workflow itself; the per-file table is in the run's summary and the HTML and `lcov.info` reports are in its `coverage` artifact.
