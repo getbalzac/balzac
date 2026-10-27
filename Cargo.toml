@@ -19,7 +19,7 @@ exclude = [
 clap = {version = "4.5.54", features = ["cargo"]}
 colog = "1.4.0"
 # default features pull in comrak's CLI and syntect with the onig C regex engine
-comrak = { version = "0.28", default-features = false }
+comrak = { version = "0.57", default-features = false }
 handlebars = "6.3.2"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 log = "0.4.29"
