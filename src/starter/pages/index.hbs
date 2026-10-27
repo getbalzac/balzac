@@ -1,0 +1,13 @@
+{{#> base}}
+<h1>Welcome to Balzac</h1>
+<p>Edit <code>pages/index.hbs</code> to change this page, and <code>layouts/base.hbs</code> to change the layout shared by every page.</p>
+<h2>Posts</h2>
+<ul>
+    {{#each collections.posts}}
+    <li>
+        <a href="{{url_for url}}">{{fm.title}}</a>
+        {{#if fm.date}}<time datetime="{{date fm.date}}">{{date fm.date "%B %-d, %Y"}}</time>{{/if}}
+    </li>
+    {{/each}}
+</ul>
+{{/base}}

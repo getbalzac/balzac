@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{#if fm.title}}{{fm.title}} · {{/if}}My Balzac site</title>
+        <link rel="stylesheet" href="{{asset "style.css"}}">
+    </head>
+    <body>
+        <header><a href="{{url_for "/"}}">My Balzac site</a></header>
+        <main>
+            {{> @partial-block}}
+        </main>
+    </body>
+</html>

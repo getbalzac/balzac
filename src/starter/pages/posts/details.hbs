@@ -1,0 +1,8 @@
+{{#> base}}
+<article>
+    <h1>{{fm.title}}</h1>
+    {{#if fm.date}}<time datetime="{{date fm.date}}">{{date fm.date "%B %-d, %Y"}}</time>{{/if}}
+    {{{content}}}
+</article>
+<p><a href="{{url_for "/"}}">All posts</a></p>
+{{/base}}
