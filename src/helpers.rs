@@ -90,12 +90,7 @@ impl SiteUrls {
     fn new(base_url: Option<&str>, dev_mode: bool) -> Self {
         let absolute_base = base_url.map(|url| url.trim_end_matches('/').to_string());
         let path_prefix = match &absolute_base {
-            Some(base) if !dev_mode => {
-                let path = base.split_once("://").map_or(base.as_str(), |(_, rest)| {
-                    rest.find('/').map_or("", |i| &rest[i..])
-                });
-                path.trim_end_matches('/').to_string()
-            }
+            Some(base) if !dev_mode => crate::url::split_base_url(base).1.to_string(),
             _ => String::new(),
         };
         Self {

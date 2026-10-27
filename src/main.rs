@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use balzac::check::CheckOptions;
 use balzac::cli;
 use balzac::config::InitFeature;
 
@@ -38,6 +39,13 @@ fn main() {
                 .get_one::<String>("TITLE")
                 .expect("title is required");
             cli::new_content(&path, collection, title);
+        }
+        Some(("check", sub_matches)) => {
+            let path = get_path_arg(sub_matches, "root");
+            let options = CheckOptions {
+                fragments: !sub_matches.get_flag("no-fragments"),
+            };
+            cli::check(&path, !sub_matches.get_flag("no-build"), options);
         }
         Some(("dev", sub_matches)) => {
             let path = get_path_arg(sub_matches, "root");
@@ -123,6 +131,25 @@ fn command() -> clap::Command {
                     clap::arg!(--root <PATH>)
                         .value_parser(clap::value_parser!(PathBuf))
                         .required(false),
+                ),
+        )
+        .subcommand(
+            clap::command!("check")
+                .about("Build project and report broken internal links and missing assets")
+                .arg(
+                    clap::arg!(--root <PATH>)
+                        .value_parser(clap::value_parser!(PathBuf))
+                        .required(false),
+                )
+                .arg(
+                    clap::arg!(--"no-build")
+                        .help("Check the existing output directory without building first")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    clap::arg!(--"no-fragments")
+                        .help("Do not check that #fragments match an element id")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(

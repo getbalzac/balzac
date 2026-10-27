@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::check::{self, CheckOptions};
 use crate::config::{Config, CreateConfigError, InitFeature, ResolvedConfig};
 use crate::context::SiteContext;
 use crate::dev;
@@ -515,6 +516,64 @@ fn fail(context: &str, error: &crate::error::Error) -> ! {
 pub fn dev(path: &Path, host: &str, port: u16) {
     if let Err(error) = dev::run(path, host, port) {
         log::error!("Error running dev server: {error}");
+        std::process::exit(1);
+    }
+}
+
+/// Builds the site unless `build` is false, then reports broken links in the
+/// output directory, exiting with status 1 when there are any.
+pub fn check(path: &Path, build: bool, options: CheckOptions) {
+    if build {
+        self::build(path);
+    }
+    let config = Config::load(path)
+        .unwrap_or_else(|e| fail("Error loading configuration", &e))
+        .resolve(path);
+    if !config.output_directory.is_dir() {
+        log::error!(
+            "Output directory {} does not exist, run `balzac build` first",
+            config.output_directory.display()
+        );
+        std::process::exit(1);
+    }
+
+    let start = std::time::Instant::now();
+    let report = match check::check(&config, options) {
+        Ok(report) => report,
+        Err(e) => {
+            log::error!("Error checking output directory: {e}");
+            std::process::exit(1);
+        }
+    };
+    let output = config
+        .output_directory
+        .strip_prefix(&config.root_directory)
+        .unwrap_or(&config.output_directory);
+    for link in &report.broken {
+        println!(
+            "{}:{}: broken link \"{}\" ({})",
+            output.join(&link.file).display(),
+            link.line,
+            link.url,
+            link.reason
+        );
+    }
+    let count =
+        |count: usize, noun: &str| format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
+    let summary = format!(
+        "checked {} in {}, skipped {} (took {:?})",
+        count(report.links, "link"),
+        count(report.files, "file"),
+        count(report.external, "external link"),
+        start.elapsed()
+    );
+    if report.broken.is_empty() {
+        log::info!("No broken links: {summary}");
+    } else {
+        log::error!(
+            "Found {}: {summary}",
+            count(report.broken.len(), "broken link")
+        );
         std::process::exit(1);
     }
 }

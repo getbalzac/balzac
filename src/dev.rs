@@ -18,6 +18,7 @@ use crate::listing::render_listing_pages;
 use crate::markdown;
 use crate::renderer::{HandlebarsRenderer, Renderer};
 use crate::sitemap::{PageType, SitePages};
+use crate::url::percent_decode;
 use crate::{
     NOT_FOUND_PAGE, ROBOTS_FILE, add_assets, collection_item_for_static_page,
     collection_location_from_source, conflicting_static_page, discover_site_pages,
@@ -1110,27 +1111,6 @@ fn resolve_decoded_path(output_root: &Path, path: &str) -> Option<PathBuf> {
     }
     let index_candidate = candidate.join("index.html");
     index_candidate.is_file().then_some(index_candidate)
-}
-
-/// Decodes `%XX` escapes (e.g. non-ASCII taxonomy terms); `None` when malformed.
-fn percent_decode(path: &str) -> Option<String> {
-    let bytes = path.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = bytes.get(index + 1..index + 3)?;
-            if !hex.iter().all(u8::is_ascii_hexdigit) {
-                return None;
-            }
-            decoded.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
 }
 
 fn sanitize_relative_path(path: &str) -> Option<PathBuf> {
