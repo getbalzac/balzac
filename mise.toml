@@ -1,4 +1,5 @@
 [tools]
+"github:taiki-e/cargo-llvm-cov" = "latest"
 lefthook = "latest"
 
 # rust comes from rust-toolchain.toml (the single source of truth, also read by rustup, CI and dist).
@@ -8,3 +9,14 @@ idiomatic_version_file_enable_tools = ["rust"]
 
 [hooks]
 postinstall = "lefthook install"
+
+[tasks.coverage]
+description = "Test coverage of both feature sets; opens the HTML report"
+run = [
+    # cargo-llvm-cov needs the LLVM tools of the toolchain pinned in rust-toolchain.toml
+    "rustup component add llvm-tools-preview",
+    "cargo llvm-cov clean --workspace",
+    "cargo llvm-cov --no-report",
+    "cargo llvm-cov --no-report --no-default-features",
+    "cargo llvm-cov report --html --open",
+]
