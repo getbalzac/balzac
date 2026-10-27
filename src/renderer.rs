@@ -1,13 +1,15 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
-use comrak::{Anchorizer, Arena, Options, Plugins, format_html_with_plugins, parse_document};
+use comrak::options::Plugins;
+use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 use handlebars::{Handlebars, RenderErrorReason};
 
 use crate::{
-    config,
+    config, directive,
     error::{self, Error, Result},
     markdown::{self, ClassHighlighter, RenderedMarkdown, TocEntry},
     vite::{ViteAssetSource, parse_manifest, vite_url},
@@ -52,11 +54,19 @@ fn template_error(path: &Path, error: &handlebars::TemplateError) -> Error {
     }
 }
 
+/// Subdirectory of the tags directory holding directive templates.
+const DIRECTIVE_TEMPLATES_DIRECTORY: &str = "directives";
+
+/// Prefix of directive templates in `tag_templates`; tag names have no `/`, so
+/// they can't collide.
+const DIRECTIVE_TEMPLATE_PREFIX: &str = "directives/";
+
 /// Per-document state collected while transforming the markdown AST.
 #[derive(Default)]
 struct DocumentState {
     anchorizer: Anchorizer,
     toc: Vec<TocEntry>,
+    directives: directive::Directives,
 }
 
 impl HandlebarsRenderer<'_> {
@@ -98,12 +108,24 @@ impl HandlebarsRenderer<'_> {
     }
 
     fn register_tag_templates(&mut self, configuration: &config::ResolvedConfig) -> Result<()> {
-        if !fs::exists(&configuration.tags_directory)? {
+        let directory = &configuration.tags_directory;
+        if !fs::exists(directory)? {
             log::debug!("Could not find tags directory, skipping tag templates");
             return Ok(());
         }
+        self.register_tag_template_dir(directory, "")?;
 
-        for entry in fs::read_dir(&configuration.tags_directory)? {
+        let directives = directory.join(DIRECTIVE_TEMPLATES_DIRECTORY);
+        if fs::exists(&directives)? {
+            self.register_tag_template_dir(&directives, DIRECTIVE_TEMPLATE_PREFIX)?;
+        }
+        Ok(())
+    }
+
+    /// Registers the `.hbs` files of `directory` as tag templates named
+    /// `prefix` followed by their file stem.
+    fn register_tag_template_dir(&mut self, directory: &Path, prefix: &str) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
             let dir = entry?;
             let path = dir.path();
             let extension = path.extension().map(|e| e.to_string_lossy().to_string());
@@ -122,7 +144,7 @@ impl HandlebarsRenderer<'_> {
             let Some(tag_name) = path.file_stem() else {
                 continue;
             };
-            let tag_name = tag_name.to_string_lossy().to_string();
+            let tag_name = format!("{prefix}{}", tag_name.to_string_lossy());
             log::debug!("Registering tag template for <{tag_name}>");
             self.tag_templates
                 .insert(tag_name.clone(), template_content);
@@ -305,14 +327,15 @@ impl HandlebarsRenderer<'_> {
         options: &Options,
         plugins: &Plugins,
     ) -> std::io::Result<String> {
-        let mut buf = Vec::new();
-        format_html_with_plugins(node, options, &mut buf, plugins)?;
-        String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let mut html = String::new();
+        format_html_with_plugins(node, options, &mut html, plugins)
+            .map_err(std::io::Error::other)?;
+        Ok(html)
     }
 
     fn render_children_to_html<'b>(
         node: &'b AstNode<'b>,
-        arena: &'b Arena<AstNode<'b>>,
+        arena: &'b Arena<'b>,
         options: &Options,
         plugins: &Plugins,
     ) -> std::io::Result<String> {
@@ -325,6 +348,125 @@ impl HandlebarsRenderer<'_> {
         }
 
         Self::format_node(temp_root, options, plugins)
+    }
+
+    /// Parses `body`, collecting its directives into `state` when enabled.
+    fn parse<'b>(
+        &self,
+        arena: &'b Arena<'b>,
+        body: &str,
+        options: &Options,
+        state: &mut DocumentState,
+    ) -> &'b AstNode<'b> {
+        let root = parse_document(arena, body, options);
+        if self.markdown.directives {
+            let has_template = |name: &str| {
+                self.tag_templates
+                    .contains_key(&format!("{DIRECTIVE_TEMPLATE_PREFIX}{name}"))
+            };
+            directive::transform(root, arena, &mut state.directives, &has_template);
+        }
+        root
+    }
+
+    /// Renders `markdown` without the `<p>` around a single paragraph, e.g.
+    /// for container directive labels.
+    fn render_inline<'b>(
+        &self,
+        registry: &Handlebars<'_>,
+        markdown: &str,
+        arena: &'b Arena<'b>,
+        options: &Options,
+        plugins: &Plugins,
+        state: &mut DocumentState,
+    ) -> Result<String> {
+        let root = self.parse(arena, markdown, options, state);
+        unwrap_single_paragraph(root);
+        self.apply_tag_templates(registry, root, arena, options, plugins, state)?;
+        Ok(Self::format_node(root, options, plugins)?)
+    }
+
+    /// Renders a directive whose children were already transformed, with its
+    /// `directives/<name>.hbs` template if there is one.
+    #[allow(clippy::too_many_arguments)]
+    fn render_directive<'b>(
+        &self,
+        registry: &Handlebars<'_>,
+        node: &'b AstNode<'b>,
+        directive: &directive::Directive,
+        arena: &'b Arena<'b>,
+        options: &Options,
+        plugins: &Plugins,
+        state: &mut DocumentState,
+    ) -> Result<String> {
+        let content = Self::render_children_to_html(node, arena, options, plugins)?;
+        let label = match (&directive.label, directive.has_label) {
+            (Some(label), _) => {
+                Some(self.render_inline(registry, label, arena, options, plugins, state)?)
+            }
+            (None, true) => Some(content.clone()),
+            (None, false) => None,
+        };
+        let attributes = &directive.attributes;
+
+        let template_name = format!("{DIRECTIVE_TEMPLATE_PREFIX}{}", directive.name);
+        if let Some(template) = self.tag_templates.get(&template_name) {
+            let template_data = serde_json::json!({
+                "content": content,
+                "props": {
+                    "kind": directive.kind,
+                    "name": directive.name,
+                    "label": label,
+                    "id": attributes.id,
+                    "classes": attributes.classes,
+                    "attributes": attributes.attributes,
+                },
+            });
+            return registry
+                .render_template(template, &template_data)
+                .map_err(|e| {
+                    let path = self.tag_template_paths.get(&template_name).map_or_else(
+                        || PathBuf::from(format!("<{template_name}> directive template")),
+                        Clone::clone,
+                    );
+                    self.render_error(&path, &e)
+                });
+        }
+
+        let tag = if directive.kind == directive::Kind::Text {
+            "span"
+        } else {
+            "div"
+        };
+        let mut html = format!("<{tag} class=\"{}", Self::html_escape(&directive.name));
+        for class in &attributes.classes {
+            html.push(' ');
+            html.push_str(&Self::html_escape(class));
+        }
+        html.push('"');
+        if let Some(id) = &attributes.id {
+            let _ = write!(html, " id=\"{}\"", Self::html_escape(id));
+        }
+        for (name, value) in &attributes.attributes {
+            let _ = write!(html, " {name}=\"{}\"", Self::html_escape(value));
+        }
+        html.push('>');
+        match directive.kind {
+            directive::Kind::Text => {
+                let _ = write!(html, "{content}</span>");
+            }
+            directive::Kind::Leaf => {
+                let _ = writeln!(html, "{content}</div>");
+            }
+            directive::Kind::Container => {
+                html.push('\n');
+                if let Some(label) = label {
+                    let _ = writeln!(html, "<p class=\"directive-label\">{label}</p>");
+                }
+                let _ = writeln!(html, "{content}</div>");
+            }
+        }
+        Ok(html)
     }
 
     /// Default heading markup when heading ids are enabled and no tag template applies.
@@ -353,7 +495,7 @@ impl HandlebarsRenderer<'_> {
         &self,
         registry: &Handlebars<'_>,
         node: &'b AstNode<'b>,
-        arena: &'b Arena<AstNode<'b>>,
+        arena: &'b Arena<'b>,
         options: &Options,
         plugins: &Plugins,
         state: &mut DocumentState,
@@ -369,7 +511,7 @@ impl HandlebarsRenderer<'_> {
             if !text.chars().any(|c| c.is_alphanumeric() || c == '_') {
                 return None;
             }
-            let id = state.anchorizer.anchorize(text.clone());
+            let id = state.anchorizer.anchorize(&text);
             state.toc.push(TocEntry {
                 level,
                 id: id.clone(),
@@ -382,6 +524,13 @@ impl HandlebarsRenderer<'_> {
         while let Some(c) = child {
             self.apply_tag_templates(registry, c, arena, options, plugins, state)?;
             child = c.next_sibling();
+        }
+
+        if let Some(directive) = state.directives.remove(&directive::key(node)) {
+            let html =
+                self.render_directive(registry, node, &directive, arena, options, plugins, state)?;
+            node.data.borrow_mut().value = NodeValue::HtmlInline(html);
+            return Ok(());
         }
 
         let tag_name = {
@@ -471,24 +620,30 @@ impl HandlebarsRenderer<'_> {
         let arena = Arena::new();
         let options = crate::collection::build_comrak_options(&self.markdown);
         let plugins = self.plugins();
-        let root = parse_document(&arena, body, &options);
+        let mut state = DocumentState::default();
+        let root = self.parse(&arena, body, &options, &mut state);
 
-        if inline
-            && let Some(paragraph) = root.first_child()
-            && paragraph.next_sibling().is_none()
-            && matches!(paragraph.data.borrow().value, NodeValue::Paragraph)
-        {
-            let mut child = paragraph.first_child();
-            while let Some(c) = child {
-                child = c.next_sibling();
-                root.append(c);
-            }
-            paragraph.detach();
+        if inline {
+            unwrap_single_paragraph(root);
         }
 
-        let mut state = DocumentState::default();
         self.apply_tag_templates(registry, root, &arena, &options, &plugins, &mut state)?;
         Ok(Self::format_node(root, &options, &plugins)?)
+    }
+}
+
+/// Replaces a document made of a single paragraph with the paragraph's content.
+fn unwrap_single_paragraph<'b>(root: &'b AstNode<'b>) {
+    if let Some(paragraph) = root.first_child()
+        && paragraph.next_sibling().is_none()
+        && matches!(paragraph.data.borrow().value, NodeValue::Paragraph)
+    {
+        let mut child = paragraph.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            root.append(c);
+        }
+        paragraph.detach();
     }
 }
 
@@ -525,13 +680,13 @@ impl<'a> Renderer for HandlebarsRenderer<'a> {
         let arena = Arena::new();
         let options = crate::collection::build_comrak_options(&self.markdown);
         let plugins = self.plugins();
-        let root = parse_document(&arena, body, &options);
+        let mut state = DocumentState::default();
+        let root = self.parse(&arena, body, &options, &mut state);
 
         // Picked before tag templates run, since they replace paragraphs with raw HTML.
         // The nodes themselves stay in the tree and are transformed in place.
         let excerpt_nodes = markdown::excerpt_nodes(root);
 
-        let mut state = DocumentState::default();
         self.apply_tag_templates(&self.registry, root, &arena, &options, &plugins, &mut state)?;
 
         let excerpt = if excerpt_nodes.is_empty() {
@@ -1263,5 +1418,279 @@ mod tests {
             html.contains("&lt;script&gt;alert(1)&lt;&#x2F;script&gt;"),
             "got: {html}"
         );
+    }
+
+    fn with_directives() -> HandlebarsRenderer<'static> {
+        create_renderer_with(config::MarkdownConfig {
+            directives: true,
+            ..config::MarkdownConfig::default()
+        })
+    }
+
+    #[test]
+    fn test_directives_disabled_by_default() {
+        let renderer = create_renderer();
+        let html = renderer
+            .render_markdown(":::note\nBody\n:::\n\nA :kbd[key].")
+            .unwrap();
+        assert_eq!(html, "<p>:::note\nBody\n:::</p>\n<p>A :kbd[key].</p>\n");
+    }
+
+    #[test]
+    fn test_container_directive() {
+        let html = with_directives()
+            .render_markdown(":::note[Heads *up*]{#n .wide data-x=\"a&b\"}\nBody **bold**\n:::")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<div class=\"note wide\" id=\"n\" data-x=\"a&amp;b\">\n<p class=\"directive-label\">Heads <em>up</em></p>\n<p>Body <strong>bold</strong></p>\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn test_nested_container_directives() {
+        let html = with_directives()
+            .render_markdown("::::outer\n:::inner\nHi\n:::\n::::")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<div class=\"outer\">\n<div class=\"inner\">\n<p>Hi</p>\n</div>\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn test_container_directive_in_list() {
+        let html = with_directives()
+            .render_markdown("- item\n\n  :::tip\n  Inside\n  :::")
+            .unwrap();
+        assert!(
+            html.contains("<li>\n<p>item</p>\n<div class=\"tip\">\n<p>Inside</p>\n</div>\n</li>"),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn test_leaf_directive() {
+        let html = with_directives()
+            .render_markdown("::youtube[My *video*]{#abc}")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<div class=\"youtube\" id=\"abc\">My <em>video</em></div>\n"
+        );
+    }
+
+    #[test]
+    fn test_bare_leaf_directive() {
+        let html = with_directives().render_markdown("::toc").unwrap();
+        assert_eq!(html, "<div class=\"toc\"></div>\n");
+    }
+
+    #[test]
+    fn test_leaf_directive_lines_split_paragraphs() {
+        let html = with_directives()
+            .render_markdown("Before\n::a[x]\nbetween\n::b  \nafter")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>Before</p>\n<div class=\"a\">x</div>\n<p>between</p>\n<div class=\"b\"></div>\n<p>after</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_leaf_directive_must_be_alone_on_its_line() {
+        let html = with_directives()
+            .render_markdown("::a[x] more\n\n::b[unclosed\n\n::c:")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>::a[x] more</p>\n<p>::b[unclosed</p>\n<p>::c:</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_text_directives() {
+        let html = with_directives()
+            .render_markdown(
+                "Press :kbd[Ctrl] + :kbd[C] for :abbr[*HTML*]{title=\"HyperText\"} :x{.y}.",
+            )
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>Press <span class=\"kbd\">Ctrl</span> + <span class=\"kbd\">C</span> for <span class=\"abbr\" title=\"HyperText\"><em>HTML</em></span> <span class=\"x y\"></span>.</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_nested_text_directives() {
+        let html = with_directives()
+            .render_markdown("A :outer[x :inner[y] z] b")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>A <span class=\"outer\">x <span class=\"inner\">y</span> z</span> b</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_simple_text_directives_without_template_stay_text() {
+        let markdown = "At 10:30 the ratio is 16:9, Note:this, :name, :br[] and :hr{}.";
+        let html = with_directives().render_markdown(markdown).unwrap();
+        assert_eq!(html, format!("<p>{markdown}</p>\n"));
+    }
+
+    #[test]
+    fn test_simple_text_directive_with_template() {
+        let mut renderer = with_directives();
+        renderer
+            .tag_templates
+            .insert("directives/br".to_string(), "<br>".to_string());
+        let html = renderer.render_markdown("a:br b :br[] c :br:").unwrap();
+        assert_eq!(html, "<p>a<br> b <br> c :br:</p>\n");
+    }
+
+    #[test]
+    fn test_text_directive_after_a_word() {
+        let html = with_directives()
+            .render_markdown("key:value{x} and a:b[c]")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>key<span class=\"value\" x=\"\"></span> and a<span class=\"b\">c</span></p>\n"
+        );
+    }
+
+    #[test]
+    fn test_text_directive_names() {
+        let html = with_directives()
+            .render_markdown(":1x[a] :über[b] :a-b_c[c] :a-[d] :_a[e]")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p><span class=\"1x\">a</span> <span class=\"über\">b</span> <span class=\"a-b_c\">c</span> :a-[d] :_a[e]</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_escaped_text_directives() {
+        let html = with_directives()
+            .render_markdown("\\:a[x] and :b[y \\] z] and ::c[w]")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p>:a[x] and <span class=\"b\">y ] z</span> and ::c[w]</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_invalid_label_or_attributes_end_the_directive() {
+        let mut renderer = with_directives();
+        renderer.tag_templates.insert(
+            "directives/a".to_string(),
+            "<i>{{{content}}}</i>".to_string(),
+        );
+        let html = renderer
+            .render_markdown(":a[unclosed and :a{k=\"v\"w}")
+            .unwrap();
+        assert_eq!(
+            html,
+            "<p><i></i>[unclosed and <i></i>{k=&quot;v&quot;w}</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_text_directive_label_spans_lines() {
+        let html = with_directives().render_markdown("A :a[x\ny] b").unwrap();
+        assert_eq!(html, "<p>A <span class=\"a\">x\ny</span> b</p>\n");
+    }
+
+    #[test]
+    fn test_code_spans_are_not_directives() {
+        let html = with_directives().render_markdown("`:code[x]`").unwrap();
+        assert_eq!(html, "<p><code>:code[x]</code></p>\n");
+    }
+
+    #[test]
+    fn test_unclosed_text_directive_label_is_text() {
+        let html = with_directives()
+            .render_markdown("An :abbr[unclosed *label* here.")
+            .unwrap();
+        assert_eq!(html, "<p>An :abbr[unclosed <em>label</em> here.</p>\n");
+    }
+
+    #[test]
+    fn test_directive_template() {
+        let mut renderer = with_directives();
+        renderer.tag_templates.insert(
+            "directives/note".to_string(),
+            "<aside data-kind=\"{{props.kind}}\" id=\"{{props.id}}\" class=\"{{#each props.classes}}{{this}}{{/each}}\" data-x=\"{{props.attributes.x}}\"><b>{{{props.label}}}</b>{{{content}}}</aside>".to_string(),
+        );
+        let html = renderer
+            .render_markdown(
+                ":::note[Title]{#i .c x=1}\nBody\n:::\n\n::note[Leaf]\n\nSee :note[inline].",
+            )
+            .unwrap();
+        assert_eq!(
+            html,
+            "<aside data-kind=\"container\" id=\"i\" class=\"c\" data-x=\"1\"><b>Title</b><p>Body</p>\n</aside><aside data-kind=\"leaf\" id=\"\" class=\"\" data-x=\"\"><b>Leaf</b>Leaf</aside>\n<p>See <aside data-kind=\"text\" id=\"\" class=\"\" data-x=\"\"><b>inline</b>inline</aside>.</p>\n"
+        );
+    }
+
+    #[test]
+    fn test_directive_content_uses_tag_templates() {
+        let mut renderer = with_directives();
+        renderer.tag_templates.insert(
+            "p".to_string(),
+            "<p class=\"x\">{{{content}}}</p>".to_string(),
+        );
+        let html = renderer.render_markdown(":::tip\nBody\n:::").unwrap();
+        assert_eq!(html, "<div class=\"tip\">\n<p class=\"x\">Body</p></div>\n");
+    }
+
+    #[test]
+    fn test_directive_label_in_heading_toc() {
+        let renderer = create_renderer_with(config::MarkdownConfig {
+            directives: true,
+            heading_ids: true,
+            ..config::MarkdownConfig::default()
+        });
+        let document = renderer.render_document("## Use :kbd[Tab]").unwrap();
+        assert_eq!(document.toc[0].id, "use-tab");
+        assert_eq!(
+            document.html,
+            "<h2 id=\"use-tab\">Use <span class=\"kbd\">Tab</span></h2>\n"
+        );
+    }
+
+    #[test]
+    fn test_excerpt_skips_container_directives() {
+        let document = with_directives()
+            .render_document(":::warning\nOutdated.\n:::\n\nIntro.")
+            .unwrap();
+        assert_eq!(document.excerpt.as_deref(), Some("<p>Intro.</p>\n"));
+    }
+
+    #[test]
+    fn test_markdown_helper_renders_directives() {
+        let renderer = with_directives();
+        let html = renderer
+            .render_fragment(&renderer.registry, "Press :kbd[K]", true)
+            .unwrap();
+        assert_eq!(html, "Press <span class=\"kbd\">K</span>");
+    }
+
+    #[test]
+    fn test_directive_templates_loaded_from_tags_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let directives = temp.path().join("tags").join("directives");
+        fs::create_dir_all(&directives).unwrap();
+        fs::write(directives.join("note.hbs"), "<aside>{{{content}}}</aside>").unwrap();
+        let mut configuration = config::Config::default().resolve(temp.path());
+        configuration.markdown.directives = true;
+
+        let mut renderer = HandlebarsRenderer::new(&configuration);
+        renderer.register_tag_templates(&configuration).unwrap();
+        let html = renderer.render_markdown(":::note\nHi\n:::").unwrap();
+        assert_eq!(html, "<aside><p>Hi</p>\n</aside>");
     }
 }

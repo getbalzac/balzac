@@ -101,7 +101,10 @@ pub fn build_comrak_options(markdown: &MarkdownConfig) -> Options<'static> {
     options.extension.autolink = true;
     options.extension.tasklist = true;
     options.extension.footnotes = markdown.footnotes;
-    options.render.unsafe_ = true;
+    options.extension.block_directive = markdown.directives;
+    // keeps `\:` and `\]` apart so they don't start or close directives
+    options.parse.escaped_char_spans = markdown.directives;
+    options.render.r#unsafe = true;
 
     options
 }

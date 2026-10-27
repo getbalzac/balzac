@@ -1,6 +1,7 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::fmt::{self, Write};
+use std::io;
 use std::sync::LazyLock;
 
 use comrak::adapters::SyntaxHighlighterAdapter;
@@ -55,7 +56,8 @@ pub fn is_excerpt_marker(html: &str) -> bool {
 
 /// Finds the nodes making up the excerpt: the top-level nodes before the
 /// `<!-- more -->` marker if there is one, otherwise the first paragraph,
-/// wherever it is nested (e.g. in a blockquote or list).
+/// wherever it is nested (e.g. in a blockquote or list, but not in a footnote
+/// or a container directive).
 #[must_use]
 pub fn excerpt_nodes<'a>(root: &'a AstNode<'a>) -> Vec<&'a AstNode<'a>> {
     let mut before_marker = Vec::new();
@@ -74,7 +76,7 @@ pub fn excerpt_nodes<'a>(root: &'a AstNode<'a>) -> Vec<&'a AstNode<'a>> {
                 && !node.ancestors().any(|ancestor| {
                     matches!(
                         ancestor.data.borrow().value,
-                        NodeValue::FootnoteDefinition(_)
+                        NodeValue::FootnoteDefinition(_) | NodeValue::BlockDirective(_)
                     )
                 })
         })
@@ -180,33 +182,34 @@ impl SyntaxHighlighterAdapter for ClassHighlighter {
         output: &mut dyn Write,
         lang: Option<&str>,
         code: &str,
-    ) -> io::Result<()> {
+    ) -> fmt::Result {
         match highlight(lang.unwrap_or_default(), code) {
-            Some(html) => output.write_all(html.as_bytes()),
-            None => comrak::html::escape(output, code.as_bytes()),
+            Some(html) => output.write_str(&html),
+            None => comrak::html::escape(output, code),
         }
     }
 
     fn write_pre_tag(
         &self,
         output: &mut dyn Write,
-        mut attributes: HashMap<String, String>,
-    ) -> io::Result<()> {
+        mut attributes: HashMap<&'static str, Cow<'_, str>>,
+    ) -> fmt::Result {
         attributes
-            .entry("class".to_string())
+            .entry("class")
             .and_modify(|class| {
+                let class = class.to_mut();
                 class.push(' ');
                 class.push_str(PRE_CLASS);
             })
-            .or_insert_with(|| PRE_CLASS.to_string());
+            .or_insert(Cow::Borrowed(PRE_CLASS));
         comrak::html::write_opening_tag(output, "pre", attributes)
     }
 
     fn write_code_tag(
         &self,
         output: &mut dyn Write,
-        attributes: HashMap<String, String>,
-    ) -> io::Result<()> {
+        attributes: HashMap<&'static str, Cow<'_, str>>,
+    ) -> fmt::Result {
         comrak::html::write_opening_tag(output, "code", attributes)
     }
 }

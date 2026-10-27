@@ -81,6 +81,9 @@ pub struct MarkdownConfig {
     pub heading_anchors: bool,
     #[serde(default)]
     pub footnotes: bool,
+    /// Text (`:name[]`), leaf (`::name[]`) and container (`:::name`) directives
+    #[serde(default)]
+    pub directives: bool,
 }
 
 impl Default for MarkdownConfig {
@@ -91,6 +94,7 @@ impl Default for MarkdownConfig {
             heading_ids: false,
             heading_anchors: false,
             footnotes: false,
+            directives: false,
         }
     }
 }
@@ -1157,6 +1161,7 @@ mod tests {
         assert!(!resolved.markdown.heading_ids);
         assert!(!resolved.markdown.heading_anchors);
         assert!(!resolved.markdown.footnotes);
+        assert!(!resolved.markdown.directives);
     }
 
     #[test]

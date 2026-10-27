@@ -679,7 +679,7 @@ Listing and taxonomy pages are added to the sitemap.
 Besides `fm`, the details template receives:
 
 - `content`: the rendered HTML of the document
-- `excerpt`: the HTML of everything before a `<!-- more -->` marker, or of the first paragraph when there is no marker (`null` if the document has no paragraph)
+- `excerpt`: the HTML of everything before a `<!-- more -->` marker, or of the first paragraph (outside footnotes and container directives) when there is no marker (`null` if the document has no paragraph)
 - `toc`: the document headings, as a list of `{ level, id, text }`
 - `toc_html`: the same headings rendered as nested `<ul>` lists linking to each heading
 
@@ -734,6 +734,7 @@ highlight_theme = "base16-ocean.dark" # default: none, no stylesheet is written
 heading_ids = true                    # default: false
 heading_anchors = true                # default: false
 footnotes = true                      # default: false
+directives = true                     # default: false
 ```
 
 ### Syntax highlighting
@@ -759,6 +760,52 @@ With `heading_ids`, headings get an `id` generated from their text, GitHub-style
 ### Footnotes
 
 `footnotes` enables footnote references (`Text[^1]`) and definitions (`[^1]: The note.`), rendered as a `<section class="footnotes">` at the end of the document.
+
+### Directives
+
+`directives` enables [generic directives](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444), the syntax used by remark-directive and Docusaurus admonitions, following the [syntax of micromark-extension-directive](https://github.com/micromark/micromark-extension-directive#syntax). There are three kinds, each with a name, an optional `[label]` (markdown) and optional `{attributes}`:
+
+```md
+:::note[Heads *up*]{#intro .wide}
+A **container** directive wraps markdown, up to the closing `:::`.
+:::
+
+::youtube[Launch video]{v=dQw4w9WgXcQ}
+
+Press :kbd[Ctrl] + :kbd[C], or read about :abbr[HTML]{title="HyperText Markup Language"}.
+```
+
+- container (`:::name`): wraps blocks until a line of `:::`. A closing fence closes every container opened with as many colons or fewer, so to nest containers give the outer one a longer fence (`::::outer` ... `::::`). An unclosed container runs to the end of its parent (document, list item, block quote)
+- leaf (`::name`): a line of its own, which ends the paragraph before it (`::toc`)
+- text (`:name`): inline, anywhere except right after another `:`; `:name:` is left alone for emoji shortcodes
+
+Names are made of letters, digits, `-` and `_` (Unicode letters too), and can't start or end with `-` or `_`. Nothing can come between the name, the label and the attributes. A label can contain markdown and other text directives, and its brackets must balance (escape others as `\[`, `\]`). A text directive whose label or attributes are invalid ends before them (`:a{k="v"w}` is `:a` followed by text). Escape the colon (`\:name`) to write a directive as text.
+
+A text directive without label or attributes (`:name`, `:name[]`, `:name{}`) is only rendered when it has a template; otherwise it stays as written, like in Docusaurus, so prose like `10:30` or `Note:this` is unchanged.
+
+Attributes are `#id`, `.class`, `key=value`, `key="quoted value"` or `key`; `id=` and `class=` set the id and classes. Without a template, directives render as a `<div>` (`<span>` for text directives) with the directive name as class, the attributes as HTML attributes, and the label of a container in a `<p class="directive-label">`:
+
+```html
+<div class="note wide" id="intro">
+<p class="directive-label">Heads <em>up</em></p>
+<p>A <strong>container</strong> directive wraps markdown, up to the closing <code>:::</code>.</p>
+</div>
+<div class="youtube" v="dQw4w9WgXcQ">Launch video</div>
+```
+
+To render a directive with your own markup, add a template named after it to `directives/` in the tags directory, e.g. `tags/directives/youtube.hbs`. It receives the rendered body (or label, for text and leaf directives) as `content`, and in `props`: `kind` (`text`, `leaf` or `container`), `name`, `label` (rendered HTML, `null` without a label), `id`, `classes` and `attributes`:
+
+```hbs
+{{!-- tags/directives/youtube.hbs --}}
+<iframe src="https://www.youtube-nocookie.com/embed/{{props.attributes.v}}" title="{{props.label}}" allowfullscreen></iframe>
+```
+
+Known differences from micromark, mostly because containers are parsed by comrak:
+
+- a container opening fence may have a space before the name (`::: note`), and a `:::` line too short to close a container opens an empty one instead of being text
+- escapes in a container's label are not kept (`:::note[a \] b]`)
+- a leaf directive line followed by `---` is a heading, not a leaf and a thematic break
+- the attributes of a text directive can't span lines
 
 ### Tag templates
 
